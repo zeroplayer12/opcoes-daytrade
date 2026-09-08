@@ -267,6 +267,7 @@ ALIASES: dict[str, list[str]] = {
     "tipo":           ["tipo", "cp", "callput", "tipoopcao", "opcaotipo"],
     "ticker":         ["ticker", "codigo", "codigoopcao", "opcao", "papel", "simbolo", "ativo"],
     "vencimento":     ["vencimento", "datavencimento", "datadevencimento", "venc", "expiracao", "maturidade"],
+    "data_hora":      ["datahora", "datahoraultneg", "dataultimonegocio", "horaultneg"],
     "dist_strike":    ["distdostrike", "distpctdostrike", "distanciastrike", "dist", "distancia"],
     "strike":         ["strike", "precoexercicio", "precodeexercicio", "preexercicio", "exercicio"],
     "moneyness":      ["aiotm", "atmitmotm", "itmotm", "moneyness", "situacao", "classificacao"],
@@ -371,7 +372,8 @@ def _moneyness(strike: float, spot: float | None, tipo: str) -> str:
 
 
 def preparar_dataframe(df_bruto: pd.DataFrame, spot: float | None = None,
-                       hoje: date | None = None) -> pd.DataFrame:
+                       hoje: date | None = None,
+                       taxa: float = 0.1075) -> pd.DataFrame:
     """Converte a grade bruta (site ou arquivo) no formato canônico do painel.
 
     Cada etapa é isolada em try/except: se uma coluna sumir ou mudar de nome no
@@ -469,8 +471,30 @@ def preparar_dataframe(df_bruto: pd.DataFrame, spot: float | None = None,
         venc = df["ticker"].map(_venc_por_serie)
     df["vencimento"] = pd.to_datetime(venc, errors="coerce").dt.date
 
+    # --- data do último negócio -------------------------------------------
+    # Decisiva: o Delta é invertido do preço negociado, então cotação velha
+    # produz volatilidade implícita absurda e Delta sem significado.
+    df["data_neg"] = pd.NaT
+    if "data_hora" in df.columns:
+        try:
+            quando = pd.to_datetime(df["data_hora"], errors="coerce", format="ISO8601")
+            faltou = quando.isna()
+            if faltou.any():
+                quando.loc[faltou] = pd.to_datetime(
+                    df.loc[faltou, "data_hora"], errors="coerce", dayfirst=True
+                )
+            df["data_neg"] = quando.dt.date
+        except Exception:
+            pass
+
+    # --- preço do ativo-objeto -------------------------------------------
+    spot_final = spot
+    if not spot_final and df["spot"].notna().any():
+        spot_final = float(df["spot"].dropna().median())
+    if not spot_final and df["dist_strike"].notna().any():
+        spot_final = _spot_implicito(df["strike"], df["dist_strike"])
+
     # --- moneyness -------------------------------------------------------
-    spot_final = spot or (df["spot"].dropna().median() if df["spot"].notna().any() else None)
     if "moneyness" in df.columns and df["moneyness"].notna().any():
         df["moneyness"] = (df["moneyness"].astype(str).str.upper().str.strip()
                            .replace({"NAN": "—", "": "—", "NONE": "—"}))
@@ -479,69 +503,108 @@ def preparar_dataframe(df_bruto: pd.DataFrame, spot: float | None = None,
             _moneyness(s, spot_final, t) for s, t in zip(df["strike"], df["tipo"])
         ]
 
+    # --- Delta ------------------------------------------------------------
+    # Só agora se descartam as linhas sem Delta: no plano gratuito do site ele
+    # vem censurado, e completar_delta o calcula a partir do preço negociado.
+    df["delta_calculado"] = False
+    df = completar_delta(df, spot_final, hoje, taxa=taxa)
     df = df.dropna(subset=["delta"])
-    return df.reset_index(drop=True)
+
+    df = df.reset_index(drop=True)
+    df.attrs["spot"] = spot_final
+    return df
 
 
 # =============================================================================
 # SEÇÃO 4 — EXTRAÇÃO (Rotas A1, A2, B e Demo)
 # =============================================================================
 
-# Layout posicional do endpoint interno do opcoes.net.br. É um contrato NÃO
-# público: pode mudar sem aviso — por isso o resultado é validado logo abaixo e,
-# se não bater, a execução cai para o Selenium.
-_LAYOUT_JSON = ["id", "ticker", "tipo", "modelo", "fm", "strike", "moneyness",
-                "dist_strike", "ultimo", "variacao", "data_hora", "num_neg",
-                "vol_financeiro", "vol_impl", "delta", "gamma", "theta", "vega", "rho"]
-
-
 def _valida_grade(df: pd.DataFrame) -> bool:
-    """Confere se o que veio parece mesmo uma grade de opções."""
+    """Confere se o que veio parece mesmo uma grade de opções.
+
+    NÃO exige Delta: no plano gratuito do opcoes.net.br os gregos vêm como uma
+    imagem borrada (`volblur.png`), e o painel calcula o Delta por conta própria.
+    """
     if df is None or df.empty:
         return False
     df = _achatar_colunas(df)
     mapa = mapear_colunas(list(df.columns))
-    if "ticker" not in mapa or "delta" not in mapa:
+    if "ticker" not in mapa or "strike" not in mapa:
         return False
     tickers_ok = df[mapa["ticker"]].astype(str).str.upper().str.split("_").str[0] \
                    .str.match(_RE_TICKER_STR, na=False).mean()
-    delta = serie_para_float(df[mapa["delta"]])
-    return bool(tickers_ok >= 0.70 and delta.notna().mean() >= 0.50
-                and delta.abs().max(skipna=True) <= 150)
+    strikes = serie_para_float(df[mapa["strike"]])
+    return bool(tickers_ok >= 0.70 and strikes.notna().mean() >= 0.70
+                and (strikes.dropna() > 0).all())
 
 
-def _rota_json(ativo: str, timeout: int = 15) -> pd.DataFrame:
-    """Rota A1 — endpoint JSON interno. Rápido, mas contrato instável."""
+def _json_opcoes(ativo: str, vencimento: date | None = None,
+                 listar_vencimentos: bool = True, timeout: int = 20) -> dict:
+    """Chama o endpoint interno do opcoes.net.br e devolve o bloco `data`."""
     if requests is None:
         raise FalhaExtracao("biblioteca 'requests' não instalada")
 
-    resp = requests.get(URL_JSON, headers=HEADERS, timeout=timeout, params={
-        "idAcao": ativo, "listarVencimentos": "true", "cotacoes": "true",
-    })
+    params = {
+        "idAcao": ativo,
+        "listarVencimentos": "true" if listar_vencimentos else "false",
+        "cotacoes": "true",
+    }
+    if vencimento is not None:
+        params["vencimentos"] = vencimento.isoformat()
+
+    cabecalhos = dict(HEADERS)
+    cabecalhos["Referer"] = URL_PAGINA.format(ativo=ativo)
+    resp = requests.get(URL_JSON, headers=cabecalhos, params=params, timeout=timeout)
     resp.raise_for_status()
+
     payload = resp.json()
+    if not isinstance(payload, dict) or not payload.get("success"):
+        raise FalhaExtracao("endpoint respondeu success=false")
+    dados = payload.get("data")
+    if not isinstance(dados, dict):
+        raise FalhaExtracao("resposta sem o bloco 'data'")
+    return dados
 
-    dados = payload.get("data", payload) if isinstance(payload, dict) else payload
-    linhas = None
-    if isinstance(dados, dict):
-        for chave in ("cotacoesOpcoes", "cotacoes", "opcoes", "lista", "rows"):
-            if dados.get(chave):
-                linhas = dados[chave]
-                break
-    elif isinstance(dados, list):
-        linhas = dados
+
+@st.cache_data(ttl=600, show_spinner=False)
+def vencimentos_do_site(ativo: str, timeout: int = 20) -> list[dict]:
+    """Vencimentos oferecidos pelo site, com os dias úteis que ele mesmo calcula."""
+    dados = _json_opcoes(ativo, listar_vencimentos=True, timeout=timeout)
+    saida: list[dict] = []
+    for item in dados.get("vencimentos") or []:
+        try:
+            attrs = item.get("dataAttributes") or {}
+            saida.append({
+                "data": datetime.strptime(item["value"], "%Y-%m-%d").date(),
+                "du": int(attrs.get("du", -1)),
+                "mensal": str(attrs.get("m", "0")) == "1",
+            })
+        except Exception:
+            continue
+    if not saida:
+        raise FalhaExtracao("o site não devolveu a lista de vencimentos")
+    return saida
+
+
+def _rota_json(ativo: str, vencimento: date, timeout: int = 20) -> pd.DataFrame:
+    """Rota A1 — cotações de UM vencimento, via endpoint JSON interno.
+
+    O payload traz a própria definição das colunas em `data.columns`, então os
+    nomes são lidos de lá em vez de adivinhados por posição: se o site inserir ou
+    reordenar uma coluna, o mapeamento continua correto.
+    """
+    dados = _json_opcoes(ativo, vencimento, listar_vencimentos=False, timeout=timeout)
+    linhas = dados.get("cotacoesOpcoes") or []
     if not linhas:
-        raise FalhaExtracao("resposta JSON sem grade de opções")
+        raise FalhaExtracao(f"sem cotações para {vencimento:%d/%m/%Y}")
 
-    if isinstance(linhas[0], dict):
-        df = pd.DataFrame(linhas)
-    else:
-        largura = min(len(_LAYOUT_JSON), max(len(l) for l in linhas))
-        df = pd.DataFrame([list(l)[:largura] for l in linhas],
-                          columns=_LAYOUT_JSON[:largura])
-        # o ticker pode vir como "PETRK50_PETR4"
-        if "ticker" in df.columns:
-            df["ticker"] = df["ticker"].astype(str).str.split("_").str[0]
+    titulos = [str(c.get("title") or c.get("name") or f"col{i}")
+               for i, c in enumerate(dados.get("columns") or [])]
+    largura = max(len(l) for l in linhas)
+    titulos += [f"col{i}" for i in range(len(titulos), largura)]
+
+    df = pd.DataFrame([list(l) + [None] * (largura - len(l)) for l in linhas],
+                      columns=titulos[:largura])
 
     if not _valida_grade(df):
         raise FalhaExtracao("layout do JSON mudou — validação falhou")
@@ -650,22 +713,57 @@ def _rota_selenium(ativo: str, headless: bool = True, espera: int = 25) -> pd.Da
 
 
 @st.cache_data(ttl=180, show_spinner=False)
-def extrair_automatico(ativo: str, usar_selenium: bool = True,
-                       headless: bool = True) -> tuple[pd.DataFrame, str, list[str]]:
-    """Executa as rotas automáticas em cascata. Devolve (df, rota, log)."""
-    log: list[str] = []
-    rotas = [("Rota A1 · JSON", lambda: _rota_json(ativo))]
-    if usar_selenium:
-        rotas.append(("Rota A2 · Selenium", lambda: _rota_selenium(ativo, headless)))
+def extrair_automatico(ativo: str, usar_selenium: bool = True, headless: bool = True,
+                       du_limite: int = 40,
+                       max_vencimentos: int = 8) -> tuple[pd.DataFrame, str, list[str]]:
+    """Rotas automáticas em cascata. Devolve (df, rota, log).
 
-    for nome, funcao in rotas:
+    As linhas do endpoint não carregam o vencimento — semanais e mensais dividem a
+    mesma letra de série. Por isso busca-se um vencimento por vez (o site filtra no
+    servidor) e a coluna Vencimento é carimbada aqui, o que também deixa o seletor
+    da barra lateral trocar de ciclo sem nova ida à rede.
+    """
+    log: list[str] = []
+
+    try:
+        inicio = time.time()
+        vencimentos = vencimentos_do_site(ativo)
+        alvos = [v for v in vencimentos if 0 < v["du"] <= du_limite][:max_vencimentos]
+        if not alvos:
+            alvos = vencimentos[:3]
+        log.append(f"📅 {len(vencimentos)} vencimentos no site, buscando {len(alvos)}")
+
+        partes: list[pd.DataFrame] = []
+        for venc in alvos:
+            try:
+                parte = _rota_json(ativo, venc["data"])
+                parte["Vencimento"] = venc["data"].strftime("%d/%m/%Y")
+                partes.append(parte)
+                ciclo = "mensal" if venc["mensal"] else "semanal"
+                log.append(f"  ✅ {venc['data']:%d/%m} ({venc['du']} DU, {ciclo}) — "
+                           f"{len(parte)} opções")
+            except Exception as exc:
+                log.append(f"  ⚠️ {venc['data']:%d/%m} — {exc}")
+
+        if partes:
+            df = pd.concat(partes, ignore_index=True)
+            log.append(f"✅ Rota A1 · JSON — {len(df)} linhas em "
+                       f"{time.time() - inicio:.1f}s")
+            return df, "Rota A1 · JSON", log
+        raise FalhaExtracao("nenhum vencimento retornou cotações")
+    except Exception as exc:
+        log.append(f"❌ Rota A1 · JSON — {exc}")
+
+    if usar_selenium:
         try:
             inicio = time.time()
-            df = funcao()
-            log.append(f"✅ {nome} — {len(df)} linhas em {time.time() - inicio:.1f}s")
-            return df, nome, log
+            df = _rota_selenium(ativo, headless)
+            log.append(f"✅ Rota A2 · Selenium — {len(df)} linhas em "
+                       f"{time.time() - inicio:.1f}s")
+            return df, "Rota A2 · Selenium", log
         except Exception as exc:
-            log.append(f"❌ {nome} — {exc}")
+            log.append(f"❌ Rota A2 · Selenium — {exc}")
+
     raise FalhaExtracao(
         "Todas as rotas automáticas falharam. Use o upload do CSV/Excel na barra lateral."
     )
@@ -757,6 +855,95 @@ def _black_scholes(s: float, k: float, t: float, sigma: float,
     return k * math.exp(-r * t) * _phi(-d2) - s * _phi(-d1), _phi(d1) - 1.0
 
 
+def volatilidade_implicita(preco: float, s: float, k: float, t: float, r: float,
+                           tipo: str, lo: float = 1e-4, hi: float = 5.0) -> float | None:
+    """Inverte o preço de mercado para achar a volatilidade implícita (bisseção).
+
+    Devolve None quando o preço não admite solução — típico de opção com última
+    negociação velha, cujo preço já não é compatível com o spot de hoje.
+    """
+    if not preco or preco <= 0 or t <= 0 or s <= 0 or k <= 0:
+        return None
+    try:
+        if _black_scholes(s, k, t, hi, r, tipo)[0] < preco:
+            return None
+        if _black_scholes(s, k, t, lo, r, tipo)[0] > preco:
+            return None
+        for _ in range(60):
+            meio = (lo + hi) / 2
+            if _black_scholes(s, k, t, meio, r, tipo)[0] < preco:
+                lo = meio
+            else:
+                hi = meio
+        return (lo + hi) / 2
+    except (ValueError, OverflowError, ZeroDivisionError):
+        return None
+
+
+def _spot_implicito(strike: pd.Series, dist: pd.Series) -> float | None:
+    """Deduz o preço do ativo-objeto a partir da distância percentual do strike.
+
+    O site publica `Distância % do Strike`, e spot = strike / (1 + dist). Testa a
+    escala (fração ou pontos percentuais) e só aceita se as linhas concordarem
+    entre si — dispersão alta significa que a coluna não é o que se supunha.
+    """
+    melhor: tuple[float, float] | None = None
+    for escala in (1.0, 100.0):
+        razao = strike / (1 + dist / escala)
+        validos = razao[np.isfinite(razao) & (razao > 0)]
+        if len(validos) < 3:
+            continue
+        mediana = float(validos.median())
+        if mediana <= 0:
+            continue
+        dispersao = float(validos.std()) / mediana
+        if melhor is None or dispersao < melhor[0]:
+            melhor = (dispersao, mediana)
+    return melhor[1] if melhor and melhor[0] < 0.05 else None
+
+
+def completar_delta(df: pd.DataFrame, spot: float | None, hoje: date,
+                    taxa: float = 0.1075, iv_maxima: float = 1.50) -> pd.DataFrame:
+    """Calcula Delta e Vol. Implícita nas linhas em que a fonte não os forneceu.
+
+    No plano gratuito do opcoes.net.br os gregos vêm censurados (uma imagem
+    borrada), o que zeraria o filtro de Delta — que é a regra central do painel.
+    A saída: inverter a volatilidade implícita do preço negociado e derivar o
+    Delta por Black-Scholes. Marca as linhas em `delta_calculado`.
+    """
+    df = df.copy()
+    if "delta_calculado" not in df.columns:
+        df["delta_calculado"] = False
+
+    faltando = df["delta"].isna()
+    if not faltando.any() or not spot or spot <= 0:
+        return df
+
+    deltas: list[float] = []
+    vols: list[float] = []
+    for idx in df.index[faltando]:
+        linha = df.loc[idx]
+        venc = linha.get("vencimento")
+        du = dias_uteis(hoje, venc) if pd.notna(venc) else -1
+        t = du / 252.0
+        sigma = volatilidade_implicita(linha.get("ultimo"), spot, linha.get("strike"),
+                                       t, taxa, linha.get("tipo"))
+        if sigma is None or sigma > iv_maxima:
+            deltas.append(np.nan)
+            vols.append(np.nan)
+            continue
+        _, delta = _black_scholes(spot, linha["strike"], t, sigma, taxa, linha["tipo"])
+        deltas.append(delta)
+        vols.append(sigma * 100.0)
+
+    df.loc[faltando, "delta"] = deltas
+    vi_vazia = df["vol_impl"].isna() & faltando
+    df.loc[faltando, "vol_impl"] = np.where(vi_vazia[faltando], vols,
+                                            df.loc[faltando, "vol_impl"])
+    df.loc[faltando, "delta_calculado"] = pd.notna(deltas)
+    return df
+
+
 @st.cache_data(show_spinner=False)
 def grade_demo(ativo: str, hoje: date) -> pd.DataFrame:
     """Grade sintética coerente (Black-Scholes) para testar o painel offline."""
@@ -813,8 +1000,9 @@ def grade_demo(ativo: str, hoje: date) -> pd.DataFrame:
 def aplicar_filtros(df: pd.DataFrame, vencimento: date | None,
                     delta_min: float, delta_max: float,
                     min_negocios: int = 0,
-                    exigir_negocio: bool = True) -> tuple[pd.DataFrame, list[tuple[str, int]]]:
-    """Aplica vencimento -> delta -> liquidez e devolve (df filtrado, funil)."""
+                    exigir_negocio: bool = True,
+                    max_atraso_du: int | None = 1) -> tuple[pd.DataFrame, list[tuple[str, int]]]:
+    """Aplica vencimento -> frescor -> delta -> liquidez. Devolve (df, funil)."""
     funil: list[tuple[str, int]] = [("Grade completa", len(df))]
     out = df.copy()
 
@@ -823,12 +1011,23 @@ def aplicar_filtros(df: pd.DataFrame, vencimento: date | None,
         out = out[out["vencimento"] == vencimento]
     funil.append((f"Vencimento {vencimento:%d/%m/%Y}" if vencimento else "Vencimento", len(out)))
 
-    # 2) Delta absoluto na faixa obrigatória
+    # 2) Frescor da cotação. Opção parada há semanas mantém volume acumulado alto
+    # e subiria no ranking de liquidez carregando um Delta calculado de preço
+    # velho — o pregão de referência é o mais recente da própria grade.
+    if max_atraso_du is not None and "data_neg" in df.columns and df["data_neg"].notna().any():
+        referencia = max(d for d in df["data_neg"].dropna())
+        atraso = out["data_neg"].map(
+            lambda d: dias_uteis(d, referencia) if pd.notna(d) else 10_000
+        )
+        out = out[atraso <= max_atraso_du]
+        funil.append((f"Negociada há ≤ {max_atraso_du} pregão(ões)", len(out)))
+
+    # 3) Delta absoluto na faixa obrigatória
     absd = out["delta"].abs()
     out = out[(absd >= delta_min) & (absd <= delta_max)]
     funil.append((f"|Delta| entre {delta_min:.2f} e {delta_max:.2f}", len(out)))
 
-    # 3) Liquidez
+    # 4) Liquidez
     if exigir_negocio:
         out = out[(out["num_neg"].fillna(0) > 0) | (out["vol_financeiro"].fillna(0) > 0)]
     if min_negocios > 0:
@@ -937,11 +1136,14 @@ def _painel_lado(titulo: str, df_lado: pd.DataFrame, vazio: str) -> None:
 
     negocios = 0 if pd.isna(melhor["num_neg"]) else int(melhor["num_neg"])
     situacao = melhor["moneyness"] if pd.notna(melhor["moneyness"]) else "—"
+    # A data do último negócio importa: Delta vindo de preço velho não vale nada.
+    quando = melhor.get("data_hora")
+    quando = f" · últ. neg. {quando}" if quando and pd.notna(quando) else ""
     st.caption(
         f"Escolhida por liquidez: {_num(negocios, 0)} negócios · "
         f"{_moeda_compacta(melhor['vol_financeiro'])} · {situacao} · "
         f"Vol. Impl. {_num(melhor['vol_impl'], 1, sufixo='%')} · "
-        f"{melhor['modelo']}"
+        f"{melhor['modelo']}{quando}"
     )
     st.dataframe(tabela_exibicao(df_lado.head(TOP_N)), hide_index=True, **_LARGURA)
 
@@ -977,8 +1179,23 @@ def main() -> None:
             type=["csv", "xlsx", "xls", "xlsm"],
             help="Use quando o scraping for bloqueado ou exigir login.",
         )
-        with st.expander("Ajustes do scraping"):
-            usar_selenium = st.checkbox("Tentar Selenium se o JSON falhar", value=True)
+        with st.expander("Ajustes avançados"):
+            taxa_pct = st.number_input(
+                "Taxa livre de risco (% a.a.)", min_value=0.0, max_value=30.0,
+                value=10.75, step=0.25,
+                help="Entra no Black-Scholes que calcula o Delta. Em opções curtas "
+                     "o efeito é pequeno; use a Selic/DI corrente.",
+            )
+            spot_manual = st.number_input(
+                "Preço do ativo (0 = deduzir do site)", min_value=0.0,
+                value=0.0, step=0.10,
+                help="O painel deduz o spot da coluna 'Distância % do Strike'. "
+                     "Preencha só para forçar outro valor.",
+            )
+            usar_selenium = st.checkbox(
+                "Tentar Selenium se o JSON falhar", value=False,
+                help="Exige Chrome e a biblioteca selenium instalados.",
+            )
             headless = st.checkbox("Chrome em modo headless", value=True)
 
     # ---------------- Carga de dados -------------------------------------
@@ -1026,7 +1243,8 @@ def main() -> None:
 
     # ---------------- Preparação -----------------------------------------
     try:
-        df = preparar_dataframe(estado["df"], hoje=hoje)
+        df = preparar_dataframe(estado["df"], spot=(spot_manual or None),
+                                hoje=hoje, taxa=taxa_pct / 100.0)
     except Exception as exc:
         st.error(f"Não consegui interpretar a grade recebida: {exc}", icon="🚫")
         with st.expander("Dados brutos recebidos"):
@@ -1036,6 +1254,17 @@ def main() -> None:
 
     if estado["fonte"] == "Demo":
         st.warning("**Modo demonstração** — dados sintéticos, não são preços reais.", icon="🧪")
+
+    calculados = int(df["delta_calculado"].sum()) if "delta_calculado" in df.columns else 0
+    if calculados:
+        st.info(
+            f"**Delta calculado pelo painel** em {calculados} de {len(df)} opções — o "
+            "opcoes.net.br censura os gregos no plano gratuito (vêm como imagem borrada). "
+            "A volatilidade implícita é invertida do preço negociado e o Delta sai por "
+            f"Black-Scholes, com ativo a **{_moeda(df.attrs.get('spot'))}** e taxa de "
+            f"{_num(taxa_pct, 2, sufixo='%')} a.a.",
+            icon="🧮",
+        )
 
     # ---------------- Sidebar: filtros (dependem dos dados) ---------------
     with st.sidebar:
@@ -1063,10 +1292,17 @@ def main() -> None:
                                          (DELTA_MIN_PADRAO, DELTA_MAX_PADRAO), step=0.05)
         min_negocios = st.number_input("Mínimo de negócios", min_value=0, value=0, step=50)
         exigir_negocio = st.checkbox("Descartar opções sem negócio", value=True)
+        max_atraso = st.slider(
+            "Máx. pregões desde o último negócio", 0, 10, 1,
+            help="Opção parada há semanas guarda volume acumulado alto e subiria no "
+                 "ranking, mas o Delta sairia de um preço velho. 1 = negociada no "
+                 "pregão mais recente da grade ou no anterior.",
+        )
 
     # ---------------- Filtros e resultado ---------------------------------
     filtrado, funil = aplicar_filtros(df, vencimento, delta_min, delta_max,
-                                      int(min_negocios), exigir_negocio)
+                                      int(min_negocios), exigir_negocio,
+                                      max_atraso_du=int(max_atraso))
     calls, puts = separar_calls_puts(filtrado)
 
     du_venc = dias_uteis(hoje, vencimento) if vencimento else "—"
@@ -1104,7 +1340,10 @@ def main() -> None:
         grade = ordenar_por_liquidez(
             df[df["vencimento"] == vencimento] if vencimento is not None else df
         )
-        st.dataframe(tabela_exibicao(grade), hide_index=True, height=380, **_LARGURA)
+        tabela_grade = tabela_exibicao(grade)
+        if "data_hora" in grade.columns:
+            tabela_grade["Últ. neg."] = grade["data_hora"].astype(str).values
+        st.dataframe(tabela_grade, hide_index=True, height=380, **_LARGURA)
         st.download_button(
             "⬇️ Baixar grade filtrada (CSV)",
             data=tabela_exibicao(filtrado).to_csv(index=False, sep=";").encode("utf-8-sig"),
