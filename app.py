@@ -1070,17 +1070,14 @@ def main() -> None:
     calls, puts = separar_calls_puts(filtrado)
 
     du_venc = dias_uteis(hoje, vencimento) if vencimento else "—"
-    # Sem `delta` nestas métricas: a seta verde de alta não faz sentido para
-    # data, contagem ou horário — o complemento vai em caption neutra.
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Ativo", ativo)
-    m1.caption("ativo-objeto")
-    m2.metric("Vencimento", f"{vencimento:%d/%m/%Y}" if vencimento else "—")
-    m2.caption(f"{du_venc} dias úteis")
-    m3.metric("Opções elegíveis", f"{len(calls)} calls · {len(puts)} puts")
-    m3.caption(f"de {len(df)} na grade")
-    m4.metric("Fonte", estado["fonte"].split("·")[0].strip())
-    m4.caption(estado["ts"].strftime("atualizado %H:%M:%S"))
+    # Uma linha só, de propósito: st.columns empilha no celular, e quatro
+    # métricas empurrariam as Calls/Puts para fora da primeira tela.
+    data_venc = f"{vencimento:%d/%m/%Y} ({du_venc} DU)" if vencimento else "—"
+    st.markdown(
+        f"**{ativo}** &nbsp;·&nbsp; venc. **{data_venc}** &nbsp;·&nbsp; "
+        f"**{len(calls)} calls · {len(puts)} puts** de {len(df)} na grade "
+        f"&nbsp;·&nbsp; {estado['fonte']} às {estado['ts']:%H:%M:%S}"
+    )
     st.divider()
 
     col_call, col_put = st.columns(2, gap="large")
