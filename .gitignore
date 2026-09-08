@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Ambientes virtuais
+.venv/
+venv/
+env/
+
+# Segredos do Streamlit (NUNCA commitar)
+.streamlit/secrets.toml
+.env
+
+# Grades exportadas do opcoes.net.br — dados de mercado, não vão pro repo
+*.csv
+*.xlsx
+*.xls
+*.xlsm
+
+# Logs e temporários
+*.log
+.DS_Store
+Thumbs.db

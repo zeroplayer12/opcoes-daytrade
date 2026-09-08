@@ -1,0 +1,11 @@
+# Configuração do painel. Vale local e no Streamlit Community Cloud.
+
+[theme]
+base = "dark"
+primaryColor = "#16a34a"
+
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false

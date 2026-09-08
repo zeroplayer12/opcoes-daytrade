@@ -1,0 +1,22 @@
+# Dashboard de Opções Day Trade — dependências
+# Testado com Python 3.11 / 3.12 (recomendado). Ver nota no README sobre 3.14.
+
+# --- Interface e dados -------------------------------------------------------
+streamlit>=1.31
+pandas>=2.0
+numpy>=1.24
+
+# --- Rota A1: endpoint JSON --------------------------------------------------
+requests>=2.31
+
+# --- Rota A2: scraping renderizado ------------------------------------------
+selenium>=4.20
+webdriver-manager>=4.0
+
+# --- Parsing de HTML (pandas.read_html + fallback manual) -------------------
+beautifulsoup4>=4.12
+lxml>=5.0
+html5lib>=1.1
+
+# --- Rota B: leitura do backup em Excel -------------------------------------
+openpyxl>=3.1
