@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Opções Day Trade · B3</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📈</text></svg>" />
+  <link rel="stylesheet"
+        href="https://cdn.jsdelivr.net/npm/@stlite/browser@1.8.1/build/stlite.css" />
+  <style>
+    :root { color-scheme: dark; }
+    html, body { margin: 0; padding: 0; background: #0e1117; }
+    #carregando {
+      position: fixed; inset: 0; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 18px;
+      background: #0e1117; color: #fafafa; z-index: 9999;
+      font-family: "Source Sans Pro", system-ui, -apple-system, sans-serif;
+      text-align: center; padding: 24px;
+    }
+    #carregando h1 { font-size: 1.5rem; margin: 0; font-weight: 600; }
+    #carregando p { margin: 0; opacity: .7; max-width: 30rem; line-height: 1.6; }
+    .barra {
+      width: min(320px, 80vw); height: 4px; border-radius: 2px;
+      background: #262730; overflow: hidden;
+    }
+    .barra i {
+      display: block; height: 100%; width: 40%; border-radius: 2px;
+      background: #16a34a; animation: desliza 1.4s ease-in-out infinite;
+    }
+    @keyframes desliza {
+      0%   { transform: translateX(-100%); }
+      100% { transform: translateX(350%); }
+    }
+    #erro { color: #ff6b6b; font-size: .85rem; max-width: 34rem; }
+  </style>
+</head>
+<body>
+  <div id="carregando">
+    <h1>📈 Opções Day Trade · B3</h1>
+    <div class="barra"><i></i></div>
+    <p>
+      Carregando o Python no navegador. A primeira visita baixa o interpretador
+      e o pandas — costuma levar de 20 a 40 segundos. Depois fica em cache.
+    </p>
+    <p id="erro"></p>
+  </div>
+
+  <div id="root"></div>
+
+  <script type="module">
+    import { mount } from "https://cdn.jsdelivr.net/npm/@stlite/browser@1.8.1/build/stlite.js";
+
+    const aviso = document.getElementById("erro");
+    const tela = document.getElementById("carregando");
+
+    try {
+      // Fora de /api para o Vercel servir como estático, não como função.
+      // no-store: 63 KB é irrelevante perto dos ~30 MB do Pyodide, e evita
+      // que um deploy novo continue rodando o app.py velho em cache.
+      const codigo = await fetch("./static/app.py", { cache: "no-store" }).then((r) => {
+        if (!r.ok) throw new Error(`app.py não carregou (HTTP ${r.status})`);
+        return r.text();
+      });
+
+      mount(
+        {
+          requirements: ["numpy", "pandas", "openpyxl"],
+          entrypoint: "app.py",
+          files: { "app.py": codigo },
+        },
+        document.getElementById("root"),
+      );
+
+      // O mount não expõe promessa de "pronto"; some a capa quando o Streamlit
+      // desenhar o primeiro nó da árvore.
+      const observador = new MutationObserver(() => {
+        if (document.querySelector('[data-testid="stApp"], .stApp')) {
+          tela.style.display = "none";
+          observador.disconnect();
+        }
+      });
+      observador.observe(document.getElementById("root"),
+                        { childList: true, subtree: true });
+    } catch (e) {
+      aviso.textContent = `Falha ao iniciar: ${e.message}`;
+    }
+  </script>
+</body>
+</html>

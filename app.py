@@ -26,11 +26,14 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import math
 import re
+import sys
 import time
 import unicodedata
 from datetime import date, datetime, timedelta
+from urllib.parse import urlencode
 
 import numpy as np
 import pandas as pd
@@ -52,8 +55,49 @@ DELTA_MIN_PADRAO, DELTA_MAX_PADRAO = 0.50, 0.70   # regra obrigatória
 DU_MIN_PADRAO, DU_MAX_PADRAO = 2, 20              # janela de dias úteis
 TOP_N = 3                                         # linhas na tabela de cada lado
 
-URL_JSON = "https://opcoes.net.br/listaopcoes/completa"
 URL_PAGINA = "https://opcoes.net.br/opcoes/bovespa/{ativo}"
+
+# No navegador (stlite/Pyodide) não existem sockets: `requests` não funciona, e o
+# opcoes.net.br não manda cabeçalho CORS, então o fetch direto seria bloqueado.
+# Nesse ambiente as chamadas vão para uma função serverless de mesma origem que
+# faz o proxy. Mesmo arquivo, dois ambientes.
+def _detectar_navegador() -> bool:
+    """Estamos rodando em WebAssembly (stlite/Pyodide)?
+
+    Não dá para confiar em heurística de ambiente aqui: `"pyodide" in
+    sys.modules` dá False no worker do stlite (o módulo existe mas ainda não foi
+    importado) e `sys.platform` variou entre builds. Errar isso manda o app pela
+    rota do `requests`, que o stlite remenda para async — a função chamadora
+    vira corrotina e o erro que aparece é de pickle, sem relação aparente.
+    A prova definitiva é conseguir importar o próprio módulo HTTP do Pyodide.
+    """
+    if sys.platform == "emscripten":
+        return True
+    try:
+        import pyodide.http  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+NO_NAVEGADOR = _detectar_navegador()
+
+
+def cache_dados(**kwargs):
+    """`st.cache_data`, exceto no WebAssembly.
+
+    No stlite o wrapper de cache é assíncrono: a função decorada passa a
+    devolver uma corrotina, e o próprio cache tenta serializá-la, falhando com
+    um erro de pickle sem relação aparente com a causa. Como as funções de rede
+    só rodam ao clicar em "Buscar no site" (o resultado fica em session_state),
+    ficar sem cache no navegador não custa nada.
+    """
+    def decorador(fn):
+        return fn if NO_NAVEGADOR else st.cache_data(**kwargs)(fn)
+    return decorador
+URL_JSON_DIRETO = "https://opcoes.net.br/listaopcoes/completa"
+URL_JSON_PROXY = "/api/opcoes"
+URL_JSON = URL_JSON_PROXY if NO_NAVEGADOR else URL_JSON_DIRETO
 
 HEADERS = {
     "User-Agent": (
@@ -556,12 +600,24 @@ def _valida_grade(df: pd.DataFrame) -> bool:
                 and (strikes.dropna() > 0).all())
 
 
+def _get_json(url: str, params: dict, cabecalhos: dict, timeout: int) -> dict:
+    """GET que devolve JSON, funcionando em Python nativo e no navegador."""
+    if NO_NAVEGADOR:
+        # Pyodide: XHR síncrono, mesma origem. Cabeçalhos e timeout ficam a
+        # cargo da função serverless que faz o proxy.
+        from pyodide.http import open_url
+        return json.loads(open_url(f"{url}?{urlencode(params)}").read())
+
+    if requests is None:
+        raise FalhaExtracao("biblioteca 'requests' não instalada")
+    resp = requests.get(url, headers=cabecalhos, params=params, timeout=timeout)
+    resp.raise_for_status()
+    return resp.json()
+
+
 def _json_opcoes(ativo: str, vencimento: date | None = None,
                  listar_vencimentos: bool = True, timeout: int = 20) -> dict:
     """Chama o endpoint interno do opcoes.net.br e devolve o bloco `data`."""
-    if requests is None:
-        raise FalhaExtracao("biblioteca 'requests' não instalada")
-
     params = {
         "idAcao": ativo,
         "listarVencimentos": "true" if listar_vencimentos else "false",
@@ -572,10 +628,7 @@ def _json_opcoes(ativo: str, vencimento: date | None = None,
 
     cabecalhos = dict(HEADERS)
     cabecalhos["Referer"] = URL_PAGINA.format(ativo=ativo)
-    resp = requests.get(URL_JSON, headers=cabecalhos, params=params, timeout=timeout)
-    resp.raise_for_status()
-
-    payload = resp.json()
+    payload = _get_json(URL_JSON, params, cabecalhos, timeout)
     if not isinstance(payload, dict) or not payload.get("success"):
         raise FalhaExtracao("endpoint respondeu success=false")
     dados = payload.get("data")
@@ -584,7 +637,7 @@ def _json_opcoes(ativo: str, vencimento: date | None = None,
     return dados
 
 
-@st.cache_data(ttl=600, show_spinner=False)
+@cache_dados(ttl=600, show_spinner=False)
 def vencimentos_do_site(ativo: str, timeout: int = 20) -> list[dict]:
     """Vencimentos oferecidos pelo site, com os dias úteis que ele mesmo calcula."""
     dados = _json_opcoes(ativo, listar_vencimentos=True, timeout=timeout)
@@ -730,7 +783,7 @@ def _rota_selenium(ativo: str, headless: bool = True, espera: int = 25) -> pd.Da
     return df
 
 
-@st.cache_data(ttl=180, show_spinner=False)
+@cache_dados(ttl=180, show_spinner=False)
 def extrair_automatico(ativo: str, usar_selenium: bool = True, headless: bool = True,
                        du_limite: int = 40,
                        max_vencimentos: int = 8) -> tuple[pd.DataFrame, str, list[str]]:
@@ -1225,6 +1278,10 @@ def main() -> None:
                 help="Exige Chrome e a biblioteca selenium instalados.",
             )
             headless = st.checkbox("Chrome em modo headless", value=True)
+            st.caption(
+                f"Ambiente: `{'WebAssembly' if NO_NAVEGADOR else 'Python local'}` · "
+                f"platform `{sys.platform}` · dados via `{URL_JSON}`"
+            )
 
     # ---------------- Carga de dados -------------------------------------
     estado = st.session_state.get("dados")

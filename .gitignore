@@ -25,3 +25,6 @@ Thumbs.db
 
 # Binario do tunel (54 MB, baixado da Cloudflare)
 cloudflared.exe
+
+# copia gerada para o deploy (build sincroniza a partir de app.py)
+web/static/app.py

@@ -1,0 +1,10 @@
+{
+  "headers": [
+    {
+      "source": "/static/app.py",
+      "headers": [
+        { "key": "Content-Type", "value": "text/plain; charset=utf-8" }
+      ]
+    }
+  ]
+}
