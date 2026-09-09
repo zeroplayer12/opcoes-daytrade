@@ -253,6 +253,12 @@ _SERIE_PUT = {chr(ord("M") + i): i + 1 for i in range(12)}
 _RE_TICKER_STR = r"^([A-Z]{4})([A-Z])(\d+)"
 _RE_TICKER_OPCAO = re.compile(_RE_TICKER_STR)
 
+# Série mensal convencional da B3: 4 letras de raiz + 1 letra de série + dígitos,
+# e NADA depois. Semanais e séries atípicas carregam sufixo (PETRI483W4, W1..W5).
+# Ancorar no fim é o que separa os dois: um "contains W" quebraria raízes com W,
+# como WEGE3 -> WEGEI50.
+_RE_TICKER_PADRAO = r"^[A-Z]{4}[A-Z]\d+$"
+
 
 def info_do_ticker(ticker: object) -> tuple[str | None, int | None]:
     """Deduz (tipo, mês de vencimento) pelo código. Ex.: PETRK50 -> ('CALL', 11)."""
@@ -1013,10 +1019,20 @@ def aplicar_filtros(df: pd.DataFrame, vencimento: date | None,
                     delta_min: float, delta_max: float,
                     min_negocios: int = 0,
                     exigir_negocio: bool = True,
-                    max_atraso_du: int | None = 1) -> tuple[pd.DataFrame, list[tuple[str, int]]]:
-    """Aplica vencimento -> frescor -> delta -> liquidez. Devolve (df, funil)."""
+                    max_atraso_du: int | None = 1,
+                    somente_padrao: bool = True) -> tuple[pd.DataFrame, list[tuple[str, int]]]:
+    """Nomenclatura -> vencimento -> frescor -> delta -> liquidez. Devolve (df, funil).
+
+    A limpeza de nomenclatura vem primeiro, antes da ordenação por liquidez, para
+    que o topo da lista seja necessariamente um contrato convencional.
+    """
     funil: list[tuple[str, int]] = [("Grade completa", len(df))]
     out = df.copy()
+
+    # 0) Nomenclatura: só a série mensal convencional da B3
+    if somente_padrao:
+        out = out[out["ticker"].str.match(_RE_TICKER_PADRAO, na=False)]
+        funil.append(("Série padrão B3 (descarta W/atípicas)", len(out)))
 
     # 1) Vencimento (ciclo escolhido no seletor)
     if vencimento is not None and out["vencimento"].notna().any():
@@ -1286,24 +1302,39 @@ def main() -> None:
         if not vencimentos:
             vencimentos = calendario_vencimentos(hoje)
 
+        somente_padrao = st.checkbox(
+            "Somente séries mensais padrão", value=True,
+            help="Aceita apenas RAIZ+LETRA+DÍGITOS (PETRI494) e descarta semanais e "
+                 "séries atípicas (PETRI483W4). Aplicado ANTES da ordenação por "
+                 "liquidez, para o topo da lista ser sempre um contrato convencional.",
+        )
+
         du_min, du_max = st.slider("Janela de dias úteis até o vencimento", 0, 60,
                                    (DU_MIN_PADRAO, DU_MAX_PADRAO))
         todos = st.checkbox("Mostrar vencimentos fora da janela", value=False)
 
-        no_ciclo = [v for v in vencimentos if du_min <= dias_uteis(hoje, v) <= du_max]
-        if not no_ciclo and not todos:
-            st.info("Nenhum vencimento na janela — exibindo todos.", icon="ℹ️")
-        elegiveis = vencimentos if (todos or not no_ciclo) else no_ciclo
+        # Com a regra estrita ligada, só a 3ª sexta entra na lista.
+        candidatos = ([v for v in vencimentos if eh_vencimento_mensal(v)]
+                      if somente_padrao else vencimentos)
+        no_ciclo = [v for v in candidatos if du_min <= dias_uteis(hoje, v) <= du_max]
+
+        if no_ciclo:
+            elegiveis = no_ciclo
+        elif todos:
+            elegiveis = candidatos or vencimentos
+        else:
+            elegiveis = []
 
         vencimento = st.selectbox(
-            "Vencimento", elegiveis, index=0,
+            "Vencimento", elegiveis, index=0 if elegiveis else None,
             format_func=lambda v: (
                 f"{v:%d/%m/%Y} · {dias_uteis(hoje, v)} DU · "
                 f"{'MENSAL' if eh_vencimento_mensal(v) else 'semanal'}"
             ),
+            placeholder="nenhum vencimento elegível",
             help="Semanais têm bem menos liquidez que o mensal, mesmo caindo dentro "
                  "da janela de dias úteis.",
-        )
+        ) if elegiveis else None
         if vencimento is not None and not eh_vencimento_mensal(vencimento):
             st.caption("⚠️ Vencimento semanal — confira o volume antes de operar.")
 
@@ -1318,10 +1349,38 @@ def main() -> None:
                  "pregão mais recente da grade ou no anterior.",
         )
 
+    # Janela vazia é um resultado legítimo da regra estrita, não um erro: os
+    # vencimentos mensais distam ~21 DU entre si, então na semana anterior a cada
+    # um deles nenhum cai na faixa de 8 a 20. Só depois de montar a barra lateral
+    # inteira, para os controles continuarem disponíveis para sair da situação.
+    if not elegiveis:
+        mensais = [v for v in vencimentos if eh_vencimento_mensal(v)]
+        st.warning(
+            f"**Nenhum vencimento mensal entre {du_min} e {du_max} dias úteis.** "
+            "Os mensais da B3 (3ª sexta) ficam a ~21 DU um do outro, então há alguns "
+            "dias por mês em que nenhum cai na janela — é o caso de hoje.",
+            icon="📭",
+        )
+        if mensais:
+            st.markdown("Mensais mais próximos:")
+            st.dataframe(
+                pd.DataFrame([{"Vencimento": f"{v:%d/%m/%Y}",
+                               "Dias úteis": dias_uteis(hoje, v)} for v in mensais[:4]]),
+                hide_index=True, **_LARGURA,
+            )
+        st.caption(
+            "Saídas: ajuste a janela no slider, marque **Mostrar vencimentos fora da "
+            "janela** para escolher na mão, ou desmarque **Somente séries mensais "
+            "padrão** para aceitar semanais."
+        )
+        _rodape()
+        return
+
     # ---------------- Filtros e resultado ---------------------------------
     filtrado, funil = aplicar_filtros(df, vencimento, delta_min, delta_max,
                                       int(min_negocios), exigir_negocio,
-                                      max_atraso_du=int(max_atraso))
+                                      max_atraso_du=int(max_atraso),
+                                      somente_padrao=somente_padrao)
     calls, puts = separar_calls_puts(filtrado)
 
     du_venc = dias_uteis(hoje, vencimento) if vencimento else "—"

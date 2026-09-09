@@ -33,10 +33,43 @@ grade sintética por Black-Scholes e exercita todos os filtros e a UI.
 
 | # | Filtro | Regra |
 |---|--------|-------|
-| 1 | **Vencimento** | Ciclo atual/próximo — **8 a 20 dias úteis**. Seletor na sidebar mostra `data · N DU`, com feriados da B3 calculados (inclui Carnaval, Sexta Santa e Corpus Christi via algoritmo da Páscoa). |
-| 2 | **Frescor** | Descarta o que não negocia há mais de N pregões. Necessário porque o Delta é calculado do preço — veja abaixo. |
-| 3 | **Delta** | `\|Δ\|` entre **0,50 e 0,70** — Calls de +0,50 a +0,70, Puts de -0,50 a -0,70. |
-| 4 | **Liquidez** | Ordena por **Volume Financeiro ↓** e **Núm. de Negócios ↓**. **O topo da lista é a opção escolhida.** |
+| 1 | **Nomenclatura** | Só a série mensal convencional da B3. Aplicado **antes** de tudo, para o topo do ranking de liquidez ser sempre um contrato padrão. |
+| 2 | **Vencimento** | Ciclo atual/próximo — **8 a 20 dias úteis**, apenas 3ª sexta. Seletor mostra `data · N DU · MENSAL/semanal`, com feriados da B3 calculados (Carnaval, Sexta Santa e Corpus Christi via algoritmo da Páscoa). |
+| 3 | **Frescor** | Descarta o que não negocia há mais de N pregões. Necessário porque o Delta é calculado do preço — veja abaixo. |
+| 4 | **Delta** | `\|Δ\|` entre **0,50 e 0,70** — Calls de +0,50 a +0,70, Puts de -0,50 a -0,70. |
+| 5 | **Liquidez** | Ordena por **Volume Financeiro ↓** e **Núm. de Negócios ↓**. **O topo da lista é a opção escolhida.** |
+
+### Como a nomenclatura é filtrada
+
+O regex é `^[A-Z]{4}[A-Z]\d+$` — raiz de 4 letras, letra de série, dígitos, e **nada
+depois**. A âncora no fim é o que faz o trabalho: semanais e séries atípicas carregam
+sufixo (`PETRI483W4`, `W1`..`W5`).
+
+Um `ticker.str.contains("W")` seria errado por dois motivos:
+
+- descartaria raízes que contêm W — `WEGE3` gera `WEGEI50`;
+- descartaria **puts de novembro**, cuja letra de série é justamente `W` (`PETRW38`).
+
+Em PETR4 o filtro corta 796 de 1391 linhas, e a separação é limpa: todo vencimento
+semanal tem 0 tickers padrão, todo mensal tem 100%.
+
+### A janela de 8–20 DU fica vazia alguns dias por mês
+
+Vencimentos mensais distam ~21 dias úteis entre si e a janela tem 13 DU de largura.
+Logo, na semana anterior a cada vencimento não existe mensal entre 8 e 20 DU — o
+mensal mais próximo está a ~7 DU e o seguinte a ~26.
+
+Isso **não é erro**: o painel explica a situação, lista os mensais mais próximos com
+seus dias úteis e aponta as três saídas (ajustar o slider, marcar *Mostrar vencimentos
+fora da janela*, ou desmarcar *Somente séries mensais padrão*). A regra não é alargada
+sozinha.
+
+O ganho de liquidez justifica o filtro. Em 09/09/2026, mesma faixa de Delta, mesmo ativo:
+
+| Vencimento | | Melhor put | Negócios | Volume |
+|---|---|---|---|---|
+| 18/09 | MENSAL (7 DU) | `PETRU19` | 349 | R$ 1.353.766 |
+| 25/09 | semanal (12 DU) | `PETRU498W4` | 1 | R$ 1.690 |
 
 ## Fontes de dados (cascata)
 
