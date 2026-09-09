@@ -33,6 +33,7 @@ import sys
 import time
 import unicodedata
 from datetime import date, datetime, timedelta
+from html import escape as _escape
 from urllib.parse import urlencode
 
 import numpy as np
@@ -1189,44 +1190,185 @@ def tabela_exibicao(df: pd.DataFrame) -> pd.DataFrame:
 
 _CSS = """
 <style>
-  .block-container {padding-top: 2.2rem; padding-bottom: 3rem;}
-  div[data-testid="stMetricValue"] {font-size: 1.6rem;}
-  .rodape {opacity:.65; font-size:.8rem; line-height:1.5;}
+  :root{
+    --fg:#e8edf3; --muted:#8b98a9; --linha:rgba(255,255,255,.09);
+    --card:#161b22; --card-topo:#1b222b;
+    --call:#26d07c; --put:#fb5f7a; --neutro:#9aa7b8;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  }
+  .block-container{padding-top:1.8rem;padding-bottom:4rem;max-width:1560px;}
+
+  /* ---- cabeçalho ---- */
+  .op-titulo{font-size:1.9rem;font-weight:700;letter-spacing:-.02em;margin:0 0 .15rem;}
+  .op-sub{color:var(--muted);font-size:.86rem;margin:0 0 1.1rem;}
+  .op-resumo{display:flex;flex-wrap:wrap;gap:.45rem 1.4rem;align-items:baseline;
+             padding:.7rem 0 .9rem;border-bottom:1px solid var(--linha);margin-bottom:1.4rem;}
+  .op-resumo b{font-weight:650;}
+  .op-resumo span{color:var(--muted);font-size:.85rem;}
+
+  /* ---- card da sugestão ---- */
+  .op-card{border:1px solid var(--linha);border-radius:14px;background:var(--card);
+           overflow:hidden;margin-bottom:.9rem;}
+  .op-card-topo{padding:1rem 1.15rem .9rem;background:var(--card-topo);
+                border-bottom:1px solid var(--linha);position:relative;}
+  .op-card-topo::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;}
+  .op-call .op-card-topo::before{background:var(--call);}
+  .op-put  .op-card-topo::before{background:var(--put);}
+  .op-linha1{display:flex;align-items:center;gap:.6rem;margin-bottom:.55rem;}
+  .op-tick{font-family:var(--mono);font-size:1.02rem;font-weight:650;letter-spacing:.01em;}
+  .op-etiqueta{font-size:.62rem;font-weight:700;letter-spacing:.09em;text-transform:uppercase;
+               padding:.2rem .45rem;border-radius:5px;border:1px solid var(--linha);
+               color:var(--muted);}
+  .op-etiqueta.itm{color:var(--call);border-color:rgba(38,208,124,.35);}
+  .op-etiqueta.atm{color:#e5b567;border-color:rgba(229,181,103,.35);}
+  .op-preco{display:flex;align-items:baseline;gap:.6rem;}
+  .op-preco b{font-size:2.05rem;font-weight:680;letter-spacing:-.025em;line-height:1;}
+  .op-var{font-size:.9rem;font-weight:600;font-family:var(--mono);}
+  .op-var.pos{color:var(--call);} .op-var.neg{color:var(--put);}
+  .op-var.nulo{color:var(--muted);font-weight:400;}
+
+  /* ---- trio de métricas ---- */
+  .op-trio{display:grid;grid-template-columns:repeat(3,1fr);}
+  .op-trio>div{padding:.8rem 1.15rem;border-right:1px solid var(--linha);}
+  .op-trio>div:last-child{border-right:none;}
+  .op-trio span{display:block;font-size:.65rem;letter-spacing:.09em;text-transform:uppercase;
+                color:var(--muted);margin-bottom:.28rem;}
+  .op-trio b{font-size:1.06rem;font-weight:620;font-family:var(--mono);letter-spacing:-.01em;}
+
+  .op-aviso{color:var(--muted);font-size:.78rem;line-height:1.6;margin:-.4rem 0 .9rem;
+            padding:.6rem .8rem;border-left:2px solid rgba(120,170,255,.45);
+            background:rgba(120,170,255,.06);border-radius:0 8px 8px 0;}
+  .op-aviso b{color:var(--fg);font-weight:600;}
+  .op-nota{color:var(--muted);font-size:.76rem;line-height:1.55;
+           padding:.1rem .15rem 1rem;}
+
+  /* ---- tabela top 3 ---- */
+  .op-tab-wrap{overflow-x:auto;border:1px solid var(--linha);border-radius:12px;}
+  table.op-tab{width:100%;border-collapse:collapse;font-size:.79rem;}
+  table.op-tab th{font-size:.62rem;letter-spacing:.08em;text-transform:uppercase;
+                  color:var(--muted);font-weight:600;text-align:right;
+                  padding:.6rem .7rem;border-bottom:1px solid var(--linha);
+                  white-space:nowrap;background:var(--card-topo);}
+  table.op-tab th:first-child,table.op-tab td:first-child{text-align:left;
+                  position:sticky;left:0;background:var(--card);}
+  table.op-tab th:first-child{background:var(--card-topo);}
+  table.op-tab td{padding:.55rem .7rem;text-align:right;white-space:nowrap;
+                  border-bottom:1px solid rgba(255,255,255,.05);
+                  font-family:var(--mono);font-variant-numeric:tabular-nums;}
+  table.op-tab tr:last-child td{border-bottom:none;}
+  table.op-tab tr:hover td{background:rgba(255,255,255,.03);}
+  table.op-tab td.tick{font-weight:620;}
+  table.op-tab td.txt{font-family:inherit;color:var(--muted);}
+  table.op-tab td.pos{color:var(--call);} table.op-tab td.neg{color:var(--put);}
+  table.op-tab tr.destaque td{background:rgba(255,255,255,.045);}
+  table.op-tab tr.destaque td:first-child{background:rgba(255,255,255,.045);}
+
+  /* ---- sidebar e rodapé ---- */
+  section[data-testid="stSidebar"] h4{font-size:.68rem;letter-spacing:.1em;
+        text-transform:uppercase;color:var(--muted);margin:1.3rem 0 .3rem;}
+  .rodape{opacity:.55;font-size:.76rem;line-height:1.6;margin-top:2rem;
+          padding-top:1rem;border-top:1px solid var(--linha);}
+
+  @media (max-width:640px){
+    .op-preco b{font-size:1.7rem;}
+    .op-trio>div{padding:.65rem .8rem;}
+    .op-trio b{font-size:.95rem;}
+  }
 </style>
 """
 
 
-def _painel_lado(titulo: str, df_lado: pd.DataFrame, vazio: str) -> None:
+def _classe_var(texto: str) -> str:
+    """Classe CSS pela direção da variação, tolerando o traço de 'sem dado'."""
+    if not texto or texto == "—":
+        return "nulo"
+    return "neg" if texto.strip().startswith("-") else "pos"
+
+
+def _cartao_sugestao(melhor: pd.Series, lado: str) -> str:
+    """Card da sugestão do dia, em HTML — controle fino que st.metric não dá."""
+    def esc(v) -> str:
+        return _escape("—" if v is None or (not isinstance(v, str) and pd.isna(v))
+                       else str(v))
+
+    situacao = esc(melhor.get("moneyness"))
+    var = _num(melhor["variacao"], 2, sufixo="%", sinal=True)
+    negocios = 0 if pd.isna(melhor["num_neg"]) else int(melhor["num_neg"])
+    quando = melhor.get("data_hora")
+    quando = f" · últ. neg. {esc(quando)}" if quando and pd.notna(quando) else ""
+
+    return f"""
+    <div class="op-card op-{lado}">
+      <div class="op-card-topo">
+        <div class="op-linha1">
+          <span class="op-tick">{esc(melhor['ticker'])}</span>
+          <span class="op-etiqueta {situacao.lower()}">{situacao}</span>
+        </div>
+        <div class="op-preco">
+          <b>{_moeda(melhor['ultimo'])}</b>
+          <span class="op-var {_classe_var(var)}">{var}</span>
+        </div>
+      </div>
+      <div class="op-trio">
+        <div><span>Strike</span><b>{_moeda(melhor['strike'])}</b></div>
+        <div><span>Delta</span><b>{_num(melhor['delta'], 3, sinal=True)}</b></div>
+        <div><span>Vol. fin.</span><b>{_moeda_compacta(melhor['vol_financeiro'])}</b></div>
+      </div>
+    </div>
+    <div class="op-nota">Escolhida por liquidez: {_num(negocios, 0)} negócios ·
+       Vol. Impl. {_num(melhor['vol_impl'], 1, sufixo='%')} ·
+       {esc(melhor['modelo'])}{quando}</div>
+    """
+
+
+# Colunas que ganham cor por sinal, e as que não são numéricas
+_COL_SINAL = {"Var. (%)", "Delta"}
+_COL_TEXTO = {"Mod.", "A/I/OTM"}
+
+
+def _tabela_html(df: pd.DataFrame) -> str:
+    """Top 3 como tabela HTML: números tabulares, cor por sinal, 1ª linha destacada."""
+    tabela = tabela_exibicao(df)
+    if tabela.empty:
+        return ""
+    cabecalho = "".join(f"<th>{_escape(c)}</th>" for c in tabela.columns)
+    linhas = []
+    for i, (_, linha) in enumerate(tabela.iterrows()):
+        celulas = []
+        for coluna, valor in linha.items():
+            texto = _escape(str(valor))
+            if coluna == "Ticker":
+                classe = "tick"
+            elif coluna in _COL_TEXTO:
+                classe = "txt"
+            elif coluna in _COL_SINAL:
+                classe = _classe_var(str(valor)).replace("nulo", "")
+            else:
+                classe = ""
+            celulas.append(f'<td class="{classe}">{texto}</td>')
+        marca = ' class="destaque"' if i == 0 else ""
+        linhas.append(f"<tr{marca}>{''.join(celulas)}</tr>")
+    return (f'<div class="op-tab-wrap"><table class="op-tab">'
+            f"<thead><tr>{cabecalho}</tr></thead>"
+            f"<tbody>{''.join(linhas)}</tbody></table></div>")
+
+
+def _painel_lado(titulo: str, lado: str, df_lado: pd.DataFrame, vazio: str) -> None:
     """Renderiza uma coluna (Calls ou Puts): card da sugestão + top 3."""
-    st.markdown(f"### {titulo}")
+    cor = "var(--call)" if lado == "call" else "var(--put)"
+    st.markdown(
+        f'<div style="display:flex;align-items:center;gap:.5rem;margin:.2rem 0 .7rem">'
+        f'<span style="width:9px;height:9px;border-radius:50%;background:{cor}"></span>'
+        f'<span style="font-size:.72rem;font-weight:700;letter-spacing:.13em">{titulo}</span>'
+        f"</div>",
+        unsafe_allow_html=True,
+    )
     if df_lado.empty:
         st.warning(vazio, icon="⚠️")
         return
 
-    melhor = df_lado.iloc[0]
-    with st.container(border=True):
-        st.metric(
-            label=f"🏆 Sugestão do dia · {melhor['ticker']}",
-            value=_moeda(melhor["ultimo"]),
-            delta=_num(melhor["variacao"], 2, sufixo="%", sinal=True),
-        )
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Strike", _moeda(melhor["strike"]))
-        c2.metric("Delta", _num(melhor["delta"], 3, sinal=True))
-        c3.metric("Vol. Financeiro", _moeda_compacta(melhor["vol_financeiro"]))
-
-    negocios = 0 if pd.isna(melhor["num_neg"]) else int(melhor["num_neg"])
-    situacao = melhor["moneyness"] if pd.notna(melhor["moneyness"]) else "—"
-    # A data do último negócio importa: Delta vindo de preço velho não vale nada.
-    quando = melhor.get("data_hora")
-    quando = f" · últ. neg. {quando}" if quando and pd.notna(quando) else ""
-    st.caption(
-        f"Escolhida por liquidez: {_num(negocios, 0)} negócios · "
-        f"{_moeda_compacta(melhor['vol_financeiro'])} · {situacao} · "
-        f"Vol. Impl. {_num(melhor['vol_impl'], 1, sufixo='%')} · "
-        f"{melhor['modelo']}{quando}"
-    )
-    st.dataframe(tabela_exibicao(df_lado.head(TOP_N)), hide_index=True, **_LARGURA)
+    st.markdown(_cartao_sugestao(df_lado.iloc[0], lado), unsafe_allow_html=True)
+    st.markdown(_tabela_html(df_lado.head(TOP_N)), unsafe_allow_html=True)
 
 
 def _tela_inicial() -> None:
@@ -1315,10 +1457,11 @@ def main() -> None:
     estado = st.session_state.get("dados")
 
     # ---------------- Cabeçalho ------------------------------------------
-    st.title("📈 Opções Day Trade · B3")
-    st.caption(
-        f"Filtro obrigatório: vencimento em {DU_MIN_PADRAO}–{DU_MAX_PADRAO} dias úteis · "
-        "|Delta| entre 0,50 e 0,70 · ordenação por liquidez."
+    st.markdown(
+        f'<div class="op-titulo">📈 Opções Day Trade · B3</div>'
+        f'<div class="op-sub">Vencimento em {DU_MIN_PADRAO}–{DU_MAX_PADRAO} dias úteis · '
+        f'|Delta| entre 0,50 e 0,70 · série mensal · ordenação por liquidez</div>',
+        unsafe_allow_html=True,
     )
 
     if not estado:
@@ -1342,13 +1485,14 @@ def main() -> None:
 
     calculados = int(df["delta_calculado"].sum()) if "delta_calculado" in df.columns else 0
     if calculados:
-        st.info(
-            f"**Delta calculado pelo painel** em {calculados} de {len(df)} opções — o "
-            "opcoes.net.br censura os gregos no plano gratuito (vêm como imagem borrada). "
-            "A volatilidade implícita é invertida do preço negociado e o Delta sai por "
-            f"Black-Scholes, com ativo a **{_moeda(df.attrs.get('spot'))}** e taxa de "
-            f"{_num(taxa_pct, 2, sufixo='%')} a.a.",
-            icon="🧮",
+        # Uma linha, de propósito: a caixa longa comia uma tela inteira no celular.
+        # A explicação completa mora no README.
+        st.markdown(
+            f'<div class="op-aviso">🧮 <b>Delta calculado pelo painel</b> — o site não '
+            f"fornece os gregos no plano gratuito. Vol. implícita invertida do preço, "
+            f"Delta por Black-Scholes · ativo <b>{_moeda(df.attrs.get('spot'))}</b> · "
+            f"taxa {_num(taxa_pct, 2, sufixo='%')} a.a. · {calculados} opções</div>",
+            unsafe_allow_html=True,
         )
 
     # ---------------- Sidebar: filtros (dependem dos dados) ---------------
@@ -1445,19 +1589,23 @@ def main() -> None:
     # métricas empurrariam as Calls/Puts para fora da primeira tela.
     data_venc = f"{vencimento:%d/%m/%Y} ({du_venc} DU)" if vencimento else "—"
     st.markdown(
-        f"**{ativo}** &nbsp;·&nbsp; venc. **{data_venc}** &nbsp;·&nbsp; "
-        f"**{len(calls)} calls · {len(puts)} puts** de {len(df)} na grade "
-        f"&nbsp;·&nbsp; {estado['fonte']} às {estado['ts']:%H:%M:%S}"
+        f'<div class="op-resumo">'
+        f'<b>{ativo}</b>'
+        f'<span>vencimento <b style="color:var(--fg)">{data_venc}</b></span>'
+        f'<span><b style="color:var(--fg)">{len(calls)}</b> calls · '
+        f'<b style="color:var(--fg)">{len(puts)}</b> puts de {len(df)} na grade</span>'
+        f"<span>{_escape(estado['fonte'])} às {estado['ts']:%H:%M:%S}</span>"
+        f"</div>",
+        unsafe_allow_html=True,
     )
-    st.divider()
 
     col_call, col_put = st.columns(2, gap="large")
     with col_call:
-        _painel_lado("🟢 CALLS", calls,
+        _painel_lado("CALLS", "call", calls,
                      "Nenhuma Call com Delta entre "
                      f"{delta_min:.2f} e {delta_max:.2f} neste vencimento.")
     with col_put:
-        _painel_lado("🔴 PUTS", puts,
+        _painel_lado("PUTS", "put", puts,
                      "Nenhuma Put com Delta entre "
                      f"-{delta_max:.2f} e -{delta_min:.2f} neste vencimento.")
 
