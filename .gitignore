@@ -22,3 +22,6 @@ env/
 *.log
 .DS_Store
 Thumbs.db
+
+# Binario do tunel (54 MB, baixado da Cloudflare)
+cloudflared.exe

@@ -221,6 +221,18 @@ def terceira_sexta(ano: int, mes: int) -> date:
     return proximo_dia_util(primeira_sexta + timedelta(days=14))
 
 
+def eh_vencimento_mensal(v: date) -> bool:
+    """True se a data é o vencimento mensal (3ª sexta) e não um semanal.
+
+    Importa para day trade: os semanais existem no mesmo intervalo de dias úteis
+    mas costumam ter uma fração da liquidez do mensal.
+    """
+    try:
+        return v == terceira_sexta(v.year, v.month)
+    except Exception:
+        return False
+
+
 def calendario_vencimentos(referencia: date, meses: int = 8) -> list[date]:
     """Próximos vencimentos teóricos da B3 a partir de uma data de referência."""
     out: list[date] = []
@@ -1285,8 +1297,15 @@ def main() -> None:
 
         vencimento = st.selectbox(
             "Vencimento", elegiveis, index=0,
-            format_func=lambda v: f"{v:%d/%m/%Y}  ·  {dias_uteis(hoje, v)} DU",
+            format_func=lambda v: (
+                f"{v:%d/%m/%Y} · {dias_uteis(hoje, v)} DU · "
+                f"{'MENSAL' if eh_vencimento_mensal(v) else 'semanal'}"
+            ),
+            help="Semanais têm bem menos liquidez que o mensal, mesmo caindo dentro "
+                 "da janela de dias úteis.",
         )
+        if vencimento is not None and not eh_vencimento_mensal(vencimento):
+            st.caption("⚠️ Vencimento semanal — confira o volume antes de operar.")
 
         delta_min, delta_max = st.slider("Faixa de |Delta|", 0.05, 0.95,
                                          (DELTA_MIN_PADRAO, DELTA_MAX_PADRAO), step=0.05)
