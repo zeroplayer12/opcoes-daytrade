@@ -29,12 +29,12 @@ tolerante, e as rotas que dependem deles simplesmente não entram na cascata.
 Primeiro teste sem depender do site: marque **Demo** na barra lateral. Ele gera uma
 grade sintética por Black-Scholes e exercita todos os filtros e a UI.
 
-## As três regras aplicadas
+## Os filtros aplicados, na ordem
 
 | # | Filtro | Regra |
 |---|--------|-------|
 | 1 | **Nomenclatura** | Só a série mensal convencional da B3. Aplicado **antes** de tudo, para o topo do ranking de liquidez ser sempre um contrato padrão. |
-| 2 | **Vencimento** | Ciclo atual/próximo — **8 a 20 dias úteis**, apenas 3ª sexta. Seletor mostra `data · N DU · MENSAL/semanal`, com feriados da B3 calculados (Carnaval, Sexta Santa e Corpus Christi via algoritmo da Páscoa). |
+| 2 | **Vencimento** | **2 a 20 dias úteis**, apenas 3ª sexta. Seletor mostra `data · N DU · MENSAL/semanal`, com feriados da B3 calculados (Carnaval, Sexta Santa e Corpus Christi via algoritmo da Páscoa). |
 | 3 | **Frescor** | Descarta o que não negocia há mais de N pregões. Necessário porque o Delta é calculado do preço — veja abaixo. |
 | 4 | **Delta** | `\|Δ\|` entre **0,50 e 0,70** — Calls de +0,50 a +0,70, Puts de -0,50 a -0,70. |
 | 5 | **Liquidez** | Ordena por **Volume Financeiro ↓** e **Núm. de Negócios ↓**. **O topo da lista é a opção escolhida.** |
@@ -53,16 +53,21 @@ Um `ticker.str.contains("W")` seria errado por dois motivos:
 Em PETR4 o filtro corta 796 de 1391 linhas, e a separação é limpa: todo vencimento
 semanal tem 0 tickers padrão, todo mensal tem 100%.
 
-### A janela de 8–20 DU fica vazia alguns dias por mês
+### Por que o piso é 2 e não 8 dias úteis
 
-Vencimentos mensais distam ~21 dias úteis entre si e a janela tem 13 DU de largura.
-Logo, na semana anterior a cada vencimento não existe mensal entre 8 e 20 DU — o
-mensal mais próximo está a ~7 DU e o seguinte a ~26.
+Vencimentos mensais distam ~21 dias úteis entre si. Com piso em 8 DU e teto em 20, a
+janela ficava **vazia na semana anterior a cada vencimento** — o mensal mais próximo a
+~7 DU e o seguinte a ~26, nenhum elegível. Acontecia todo mês, justamente na semana de
+maior movimento. Por isso o piso é **2 DU**.
 
-Isso **não é erro**: o painel explica a situação, lista os mensais mais próximos com
-seus dias úteis e aponta as três saídas (ajustar o slider, marcar *Mostrar vencimentos
-fora da janela*, ou desmarcar *Somente séries mensais padrão*). A regra não é alargada
-sozinha.
+Se a janela ficar vazia mesmo assim, **não é erro**: o painel explica a situação, lista
+os mensais mais próximos com seus dias úteis e aponta as três saídas (ajustar o slider,
+marcar *Mostrar vencimentos fora da janela*, ou desmarcar *Somente séries mensais
+padrão*). A regra nunca é alargada sozinha.
+
+Perto do vencimento o Delta calculado fica mais sensível: com pouco valor no tempo, a
+inversão da volatilidade implícita perde precisão e o Delta salta rápido entre 0 e 1 a
+cada centavo do ativo. Vale conferir no home broker antes de operar a 2 ou 3 DU.
 
 O ganho de liquidez justifica o filtro. Em 09/09/2026, mesma faixa de Delta, mesmo ativo:
 

@@ -7,7 +7,7 @@
            BOVA11, PETR4, VALE3, BBAS3, ITUB4 e BPAC11.
 
  Regras de negócio (o core operacional):
-   1) VENCIMENTO ... ciclo atual/próximo -> 8 a 20 dias úteis (ajustável na UI)
+   1) VENCIMENTO ... série mensal da B3, 2 a 20 dias úteis (ajustável na UI)
    2) DELTA ........ |Delta| entre 0,50 e 0,70
                      (Calls: +0,50 a +0,70  |  Puts: -0,70 a -0,50)
    3) LIQUIDEZ ..... ordena por Volume Financeiro DESC e Núm. de Negócios DESC
@@ -49,7 +49,7 @@ except ImportError:  # pragma: no cover
 ATIVOS: list[str] = ["BOVA11", "PETR4", "VALE3", "BBAS3", "ITUB4", "BPAC11"]
 
 DELTA_MIN_PADRAO, DELTA_MAX_PADRAO = 0.50, 0.70   # regra obrigatória
-DU_MIN_PADRAO, DU_MAX_PADRAO = 8, 20              # janela de dias úteis
+DU_MIN_PADRAO, DU_MAX_PADRAO = 2, 20              # janela de dias úteis
 TOP_N = 3                                         # linhas na tabela de cada lado
 
 URL_JSON = "https://opcoes.net.br/listaopcoes/completa"
@@ -1260,7 +1260,7 @@ def main() -> None:
     # ---------------- Cabeçalho ------------------------------------------
     st.title("📈 Opções Day Trade · B3")
     st.caption(
-        "Filtro obrigatório: vencimento no ciclo de 8–20 dias úteis · "
+        f"Filtro obrigatório: vencimento em {DU_MIN_PADRAO}–{DU_MAX_PADRAO} dias úteis · "
         "|Delta| entre 0,50 e 0,70 · ordenação por liquidez."
     )
 
@@ -1351,7 +1351,7 @@ def main() -> None:
 
     # Janela vazia é um resultado legítimo da regra estrita, não um erro: os
     # vencimentos mensais distam ~21 DU entre si, então na semana anterior a cada
-    # um deles nenhum cai na faixa de 8 a 20. Só depois de montar a barra lateral
+    # um deles nenhum cai na faixa. Só depois de montar a barra lateral
     # inteira, para os controles continuarem disponíveis para sair da situação.
     if not elegiveis:
         mensais = [v for v in vencimentos if eh_vencimento_mensal(v)]
