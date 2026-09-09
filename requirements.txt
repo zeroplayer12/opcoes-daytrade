@@ -1,22 +1,30 @@
 # Dashboard de Opções Day Trade — dependências
-# Testado com Python 3.11 / 3.12 (recomendado). Ver nota no README sobre 3.14.
+#
+# Só o essencial fica ativo. O Streamlit Community Cloud instala este arquivo a
+# cada build, e o que não é usado só custa tempo e chance de quebrar.
 
 # --- Interface e dados -------------------------------------------------------
 streamlit>=1.31
 pandas>=2.0
 numpy>=1.24
 
-# --- Rota A1: endpoint JSON --------------------------------------------------
+# --- Rota A1: endpoint JSON do opcoes.net.br (é a rota que funciona) ---------
 requests>=2.31
 
-# --- Rota A2: scraping renderizado ------------------------------------------
-selenium>=4.20
-webdriver-manager>=4.0
-
-# --- Parsing de HTML (pandas.read_html + fallback manual) -------------------
-beautifulsoup4>=4.12
-lxml>=5.0
-html5lib>=1.1
-
-# --- Rota B: leitura do backup em Excel -------------------------------------
+# --- Rota B: leitura do backup em Excel --------------------------------------
 openpyxl>=3.1
+
+# -----------------------------------------------------------------------------
+# OPCIONAIS — Rota A2 (Selenium)
+#
+# Descomente só se for usar o scraping via navegador, que exige Chrome
+# instalado. NÃO funciona no Streamlit Community Cloud: o contêiner não tem
+# Chrome, e deixar isso ativo apenas alonga o build. A opção vem desmarcada na
+# barra lateral, e sem estes pacotes o app sobe igual — a rota simplesmente não
+# entra na cascata.
+#
+# selenium>=4.20
+# webdriver-manager>=4.0
+# beautifulsoup4>=4.12
+# lxml>=5.0
+# html5lib>=1.1
