@@ -6,9 +6,10 @@ Três caminhos, em ordem de recomendação.
 
 ## 1. Streamlit Community Cloud — permanente, gratuito, tudo funciona
 
-Roda 24/7 sem depender do seu PC, e **a rota "Buscar no site" funciona** (ao
-contrário do build da Vercel — veja a seção 3). O repositório local já está
-commitado e pronto.
+Não depende do seu PC e **a rota "Buscar no site" funciona** (ao contrário do
+build da Vercel — veja a seção 3). Mas **não é 24/7**: dorme por inatividade, veja
+"O que muda na nuvem". Publicado, e privado, em
+<https://zeroplayer12-opcoes-daytrade-app-2z3e1c.streamlit.app>.
 
 Preciso de você em dois pontos: criar o repositório e autorizar o Streamlit no
 GitHub. Não crio contas nem faço login por você.
@@ -25,15 +26,16 @@ Em <https://github.com/new>:
 
 ### Passo 2 — publicar o código
 
-Um comando só. Troque o dono se preferir sua conta pessoal em vez da org:
+Um comando só. O repositório real é `zeroplayer12/opcoes-daytrade`:
 
 ```bash
-cd "C:\Users\Vitor\OneDrive\Área de Trabalho\Leilo\opcoes-daytrade" && git remote add origin https://github.com/Leiloai/opcoes-daytrade.git && git branch -M main && git push -u origin main
+cd "C:\Users\Vitor\OneDrive\Área de Trabalho\Leilo\opcoes-daytrade" && git remote add origin https://zeroplayer12@github.com/zeroplayer12/opcoes-daytrade.git && git branch -M main && git push -u origin main
 ```
 
-O `credential.helper` da máquina está como `manager`, então o Windows deve
-reaproveitar a credencial do GitHub sem pedir nada. Se pedir, use um Personal
-Access Token como senha (github.com/settings/tokens, escopo `repo`).
+Cuidado com a credencial: o Windows guarda a da conta `Leiloai`, e o primeiro
+push falhou com `Permission to zeroplayer12/opcoes-daytrade.git denied to Leiloai`.
+O `zeroplayer12@` na URL força o Git a pedir a credencial da conta certa — o Git
+Credential Manager abre uma janela de login uma vez e depois lembra.
 
 ### Passo 3 — publicar o app
 
@@ -43,15 +45,15 @@ Access Token como senha (github.com/settings/tokens, escopo `repo`).
 
 | Campo | Valor |
 |---|---|
-| Repository | `Leiloai/opcoes-daytrade` |
+| Repository | `zeroplayer12/opcoes-daytrade` |
 | Branch | `main` |
 | Main file path | `app.py` |
 | Python version | **3.12** |
 
 4. **Deploy**. O primeiro build leva 2–4 minutos.
 
-A URL final fica no formato `https://<algo>-opcoes-daytrade.streamlit.app`, é
-fixa e pode ser favoritada.
+URL deste deploy: <https://zeroplayer12-opcoes-daytrade-app-2z3e1c.streamlit.app>
+— fixa, pode ser favoritada.
 
 ### O que muda na nuvem
 
@@ -61,16 +63,28 @@ fixa e pode ser favoritada.
   contêiner não tem Chrome, e mantê-los só alongava o build. O app sobe igual
   sem eles — a Rota A2 simplesmente não entra na cascata.
 
-- **A Rota A1 (JSON) sustenta o painel, e é incerta na nuvem.** As requisições
-  sairão de um IP de datacenter, possivelmente fora do Brasil, e o
-  opcoes.net.br pode recusar. Não dá para saber sem testar. Se recusar, o
-  **upload de CSV/Excel** continua funcionando e é o plano B.
+- **A Rota A1 (JSON) funciona na nuvem.** Era a incerteza antes do deploy — as
+  requisições saem de um IP de datacenter — mas o opcoes.net.br aceitou. Validado
+  em 09/09/2026 com resultado idêntico ao da versão local. Se um dia recusar, o
+  **upload de CSV/Excel** continua como plano B.
 
-- **O app fica público.** Qualquer pessoa com o link abre. Não há dado pessoal
-  nem credencial no projeto. Para restringir, as configurações do app no
-  Community Cloud permitem lista de e-mails autorizados.
+- **O app está privado** (escolha de 11/09/2026). Só abre logado na conta
+  `zeroplayer12`, inclusive no celular. Tornar público é um clique em
+  Share → Make this app public, mas aí qualquer pessoa com o link acessa.
 
-- O app hiberna após alguns dias sem acesso e acorda no primeiro request (~30s).
+- **O app dorme por inatividade — e rápido.** Publicado em 09/09/2026, já estava
+  dormindo em 11/09, menos de 48h sem acesso. Ao abrir aparece *"This app has gone
+  to sleep due to inactivity"* com o botão **Yes, get this app back up!**; o
+  contêiner é reprovisionado e leva alguns minutos. **Não é falha** — código e
+  fonte de dados continuam intactos. É a causa mais provável de "parou de
+  funcionar".
+
+- **App privado não pode ser mantido acordado por ping.** Acesso anônimo é barrado
+  na borda do Streamlit (o nginx responde `303 → share.streamlit.io/-/auth`) e
+  nunca chega ao contêiner, então um agendador que "pinga" o app não conta como
+  atividade. Saídas: tornar o app público (aí o ping funciona), aceitar a espera
+  ao acordar, ou usar a versão local (`streamlit run app.py` ou `abrir-web.bat`)
+  quando estiver no PC.
 
 ---
 
