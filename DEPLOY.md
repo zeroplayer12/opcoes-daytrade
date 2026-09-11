@@ -75,7 +75,9 @@ URL deste deploy: <https://zeroplayer12-opcoes-daytrade-app-2z3e1c.streamlit.app
 - **O app dorme por inatividade — e rápido.** Publicado em 09/09/2026, já estava
   dormindo em 11/09, menos de 48h sem acesso. Ao abrir aparece *"This app has gone
   to sleep due to inactivity"* com o botão **Yes, get this app back up!**; o
-  contêiner é reprovisionado e leva alguns minutos. **Não é falha** — código e
+  contêiner volta em segundos (16 s em 11/09), mas a tela *"Your app is in the
+  oven"* pode ficar parada com o app já no ar — **recarregue a página (F5)**.
+  **Não é falha** — código e
   fonte de dados continuam intactos. É a causa mais provável de "parou de
   funcionar".
 
