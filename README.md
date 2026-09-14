@@ -41,10 +41,13 @@ após 12h sem visita.
 | `iniciar-painel.cmd` | aqui no projeto | sobe o Streamlit em `127.0.0.1:8501` e, se cair, tenta de novo a cada 30 s |
 | `parar-painel.cmd` | aqui no projeto | encerra o painel e o laço de reinício |
 | `painel.log` | aqui no projeto | log; acima de 5 MB vira `painel.old.log` |
+| `painel.inicio.log` | aqui no projeto | anota quando uma segunda partida é recusada |
 
 - **Privado de verdade:** escuta só em `127.0.0.1`, então nem outro aparelho da
   rede de casa acessa. Por isso não abre no celular.
 - **Desativar o início automático:** apague `Painel de Opcoes.vbs` da pasta Inicializar.
+- **Uma instância só:** se o painel já estiver no ar, uma segunda execução do
+  `iniciar-painel.cmd` sai sozinha em vez de ficar disputando a porta.
 - O endereço vai por linha de comando, não pelo `.streamlit/config.toml`: fixar
   `127.0.0.1` ali quebraria o deploy do Streamlit Cloud.
 - O `abrir-web.bat` abre um túnel **público** — não use se quiser manter privado.
