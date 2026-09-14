@@ -1646,15 +1646,19 @@ def tabela_exibicao(df: pd.DataFrame) -> pd.DataFrame:
 # =============================================================================
 # SEÇÃO 7 — INTERFACE
 # =============================================================================
-# Direção visual (skill ui-ux-pro-max): Swiss/minimal escuro e denso, Fira Sans
-# na interface e Fira Code nos códigos de negociação. A cor fica reservada para
+# Direção visual (skill ui-ux-pro-max): liquid glass sobre base escura e densa.
+# O conteúdo fica em vidro fosco escuro, que mantém o contraste dos números; o
+# vidro claro e brilhante fica para a navegação e os controles, como pede o
+# material (abas, seletores, botões, selos). Inter na interface e Fira Code nos
+# códigos de negociação. Sem transparência quando o sistema pede menos
+# transparência ou o navegador não tem backdrop-filter. A cor fica reservada para
 # os dados (skill dataviz): call e put são identidade, não bom/ruim, e usam o par
 # categórico validado — azul #3987e5 e laranja #d95926, ΔE CVD 26,8 sobre a
 # superfície dos cards. Verde e vermelho aparecem só em variação com sinal,
 # sempre com seta. O cromo da interface é monocromático.
 
 _FONTES = ("https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600"
-           "&family=Fira+Sans:wght@400;500;600;700&display=swap")
+           "&family=Inter:wght@400;500;600;700&display=swap")
 
 _CSS = """
 <style>
@@ -1662,15 +1666,18 @@ _CSS = """
 :root{
   --bg:#05070C; --s1:#0B0F1A; --s2:#10151F; --s3:#171D2C;
   --ln:#1C2333; --ln2:#29324A;
-  --t1:#F1F5F9; --t2:#A3AEC2; --t3:#7C889E;
+  --t1:#F1F5F9; --t2:#A9B4C8; --t3:#8B97AD;
   --call:#3987e5; --put:#d95926;
-  --up:#22C55E; --down:#F05252; --gray-mark:#222939; --seq:#64748B;
-  --c-pos:#3987e5; --c-neg:#e66767; --c-mid:#222838;
-  --sans:'Fira Sans',system-ui,-apple-system,'Segoe UI',sans-serif;
+  --up:#22C55E; --down:#F05252; --gray-mark:#2B3552; --seq:#64748B;
+  --c-pos:#3987e5; --c-neg:#e66767; --c-mid:#1E2740;
+  --sans:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
   --mono:'Fira Code',ui-monospace,Consolas,monospace;
-  --r:10px;
+  --r:18px;
+  --solido:#111829;   /* vidro sem transparência: células fixas e fallback */
+  --vidro:linear-gradient(180deg,rgba(26,33,57,.66) 0%,rgba(13,17,32,.58) 100%);
+  --vidro-claro:linear-gradient(180deg,rgba(255,255,255,.13) 0%,rgba(255,255,255,.045) 100%);
 }
-[data-testid="stAppViewContainer"],[data-testid="stMain"]{background:var(--bg);}
+[data-testid="stAppViewContainer"],[data-testid="stMain"]{background:transparent!important;}
 [data-testid="stHeader"]{background:transparent;}
 [data-testid="stDecoration"]{display:none;}
 .block-container{padding:1rem 2rem 3rem!important;max-width:100%!important;}
@@ -1980,6 +1987,97 @@ section[data-testid="stSidebar"] .sb.first{border-top:none;padding-top:0;margin-
 .efe{display:inline-flex;align-items:center;gap:3px;font:600 11.5px/1 var(--sans);white-space:nowrap;}
 .efe svg.ic{width:13px;height:13px;stroke-width:2.2;}
 .efe.up{color:var(--up);} .efe.down{color:var(--down);} .efe.na{color:var(--t3);font-weight:400;}
+/* ================= liquid glass ================= */
+/* fundo: luz difusa fixa atrás do conteúdo, com grão bem leve */
+[data-testid="stApp"]{background-color:#060913!important;background-image:
+  url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='g'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .55 0'/></filter><rect width='100%' height='100%' filter='url(%23g)' opacity='.05'/></svg>"),
+  radial-gradient(58vw 42vw at 8% -6%,rgba(59,110,230,.34),transparent 62%),
+  radial-gradient(46vw 38vw at 96% 2%,rgba(128,90,245,.24),transparent 62%),
+  radial-gradient(44vw 36vw at 52% 48%,rgba(67,97,238,.10),transparent 64%),
+  radial-gradient(52vw 44vw at 72% 108%,rgba(20,184,166,.17),transparent 62%),
+  radial-gradient(38vw 34vw at -4% 88%,rgba(56,189,248,.12),transparent 62%)!important;}
+
+/* conteúdo: vidro fosco escuro */
+.dx .card,.dx .kpi,.dx .empty-st,.dx .guia{position:relative;background:var(--vidro);
+  border:1px solid rgba(255,255,255,.075);border-radius:var(--r);
+  -webkit-backdrop-filter:blur(24px) saturate(165%);backdrop-filter:blur(24px) saturate(165%);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.09),0 24px 48px -28px rgba(0,0,0,.85);}
+/* luz de borda: mais forte no canto de cima, como vidro curvo pegando luz */
+.dx .card::after,.dx .kpi::after,.dx .empty-st::after,.dx .guia::after{content:"";position:absolute;inset:-1px;
+  border-radius:inherit;padding:1px;pointer-events:none;opacity:.85;transition:opacity .25s ease;
+  background:linear-gradient(140deg,rgba(255,255,255,.34),rgba(255,255,255,.07) 26%,rgba(255,255,255,0) 55%,
+    rgba(255,255,255,.12) 100%);
+  -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;
+  mask:linear-gradient(#000 0 0) content-box exclude,linear-gradient(#000 0 0);}
+.dx .card:hover::after,.dx .kpi:hover::after{opacity:1;}
+.dx .rk th{background:transparent;}
+.dx .rk th:first-child,.dx .rk td:first-child,.dx .hm td.ak{background:var(--solido);}
+.dx .rk tbody tr:hover td{background:rgba(255,255,255,.045);}
+.dx .hm td.c{border-radius:8px;}
+.card-h{border-bottom-color:rgba(255,255,255,.07);}
+
+/* marca: gota de vidro */
+.brand .mark{border-radius:12px;border:1px solid rgba(255,255,255,.18);color:#fff;
+  background:radial-gradient(120% 120% at 28% 18%,rgba(255,255,255,.42),rgba(255,255,255,.07) 46%,
+    rgba(59,110,230,.32) 100%);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.45),0 8px 22px -8px rgba(59,110,230,.65);}
+
+/* navegação e controles: vidro claro, com brilho no topo */
+.dx .pill{background:var(--vidro-claro);border:1px solid rgba(255,255,255,.12);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.24),0 6px 18px -10px rgba(0,0,0,.8);
+  -webkit-backdrop-filter:blur(16px) saturate(170%);backdrop-filter:blur(16px) saturate(170%);}
+.dx .chip{background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.11);}
+.dx .chip.strong{background:rgba(255,255,255,.12);border-color:rgba(255,255,255,.22);}
+[data-testid="stTabs"] [role="tablist"]{width:fit-content;gap:4px;padding:4px;border-radius:999px;
+  background:var(--vidro-claro);border:1px solid rgba(255,255,255,.11);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.2),0 12px 28px -16px rgba(0,0,0,.9);
+  -webkit-backdrop-filter:blur(18px) saturate(180%);backdrop-filter:blur(18px) saturate(180%);}
+[data-testid="stTabs"] [role="tab"]{border-radius:999px;padding:8px 18px;margin:0;}
+[data-testid="stTabs"] [role="tab"][aria-selected="true"]{
+  background:linear-gradient(180deg,rgba(255,255,255,.22),rgba(255,255,255,.08));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.48),inset 0 -1px 0 rgba(255,255,255,.06),0 4px 14px -6px rgba(0,0,0,.75);}
+[data-testid="stTabs"] [data-baseweb="tab-highlight"],[data-testid="stTabs"] [data-baseweb="tab-border"]{display:none;}
+[data-testid="stBaseButton-segmented_control"],[data-testid="stBaseButton-segmented_controlActive"]{
+  border-radius:12px!important;margin-right:6px;transition:background .15s ease,color .15s ease;}
+[data-testid="stBaseButton-segmented_control"]{background:rgba(255,255,255,.04)!important;
+  border:1px solid rgba(255,255,255,.09)!important;color:var(--t2)!important;
+  -webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);}
+[data-testid="stBaseButton-segmented_control"]:hover{background:rgba(255,255,255,.08)!important;color:var(--t1)!important;}
+[data-testid="stBaseButton-segmented_controlActive"]{
+  background:linear-gradient(180deg,rgba(255,255,255,.24),rgba(255,255,255,.09))!important;
+  border:1px solid rgba(255,255,255,.24)!important;color:#fff!important;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.5),0 8px 18px -10px rgba(0,0,0,.85)!important;}
+[data-testid="stBaseButton-secondary"]{border-radius:12px!important;background:var(--vidro-claro)!important;
+  border:1px solid rgba(255,255,255,.14)!important;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.3),0 10px 22px -12px rgba(0,0,0,.85);
+  -webkit-backdrop-filter:blur(16px) saturate(170%);backdrop-filter:blur(16px) saturate(170%);}
+[data-testid="stBaseButton-secondary"]:hover{
+  background:linear-gradient(180deg,rgba(255,255,255,.2),rgba(255,255,255,.07))!important;
+  border-color:rgba(255,255,255,.22)!important;}
+[data-testid="stExpander"] details{border-radius:var(--r)!important;border:1px solid rgba(255,255,255,.08)!important;
+  background:var(--vidro);box-shadow:inset 0 1px 0 rgba(255,255,255,.08);
+  -webkit-backdrop-filter:blur(22px) saturate(160%);backdrop-filter:blur(22px) saturate(160%);}
+[data-testid="stExpander"] summary:hover{background:rgba(255,255,255,.035);}
+[data-testid="stSidebar"]{background:linear-gradient(180deg,rgba(15,20,38,.74),rgba(8,11,22,.68))!important;
+  border-right:1px solid rgba(255,255,255,.08)!important;
+  -webkit-backdrop-filter:blur(28px) saturate(160%);backdrop-filter:blur(28px) saturate(160%);}
+[data-testid="stSidebarContent"],[data-testid="stSidebarUserContent"]{background:transparent!important;}
+[data-baseweb="input"],[data-testid="stNumberInputContainer"]{border-radius:12px!important;
+  background:rgba(255,255,255,.045)!important;border-color:rgba(255,255,255,.1)!important;}
+[data-baseweb="input"] input,[data-testid="stNumberInputContainer"] input{background:transparent!important;}
+
+/* menos transparência pedida pelo sistema, ou navegador sem backdrop-filter: tudo opaco */
+@media (prefers-reduced-transparency:reduce){
+  .dx .card,.dx .kpi,.dx .empty-st,.dx .guia,.dx .pill,[data-testid="stSidebar"],
+  [data-testid="stExpander"] details,[data-testid="stTabs"] [role="tablist"],
+  [data-testid="stBaseButton-secondary"]{background:var(--solido)!important;
+    -webkit-backdrop-filter:none!important;backdrop-filter:none!important;}
+}
+@supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){
+  .dx .card,.dx .kpi,.dx .empty-st,.dx .guia,.dx .pill,[data-testid="stSidebar"],
+  [data-testid="stExpander"] details,[data-testid="stTabs"] [role="tablist"]{background:var(--solido)!important;}
+}
+@media (prefers-reduced-motion:reduce){ .dx .card::after,.dx .kpi::after{transition:none;} }
 @media (prefers-reduced-motion:reduce){ .chart .bar{transition:none;} }
 </style>
 """.replace("__FONTES__", _FONTES)
@@ -2917,7 +3015,7 @@ def pagina_correlacoes(cabecalho) -> None:
 
 def _painel_mercados() -> None:
     """Conteúdo da aba Correlações; roda como fragmento para se atualizar sozinho."""
-    c_jan, c_sts, c_acao = st.columns([4, 5, 1.3], vertical_alignment="bottom")
+    c_jan, c_sts, c_acao = st.columns([6, 3, 1.3], vertical_alignment="bottom")
     with c_jan:
         janela = st.segmented_control(
             "Janela da correlação", JANELAS_CORR, key="janela_corr", required=True,

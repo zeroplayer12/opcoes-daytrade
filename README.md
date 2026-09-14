@@ -243,8 +243,20 @@ clara". É um resumo do que a tabela já mostra, não um sinal de entrada.
 
 ## Design
 
-Direção Swiss/minimalista, escura e densa (skill *ui-ux-pro-max*), com Fira Sans na
-interface e Fira Code nos tickers. A cor fica reservada aos dados:
+**Liquid glass** sobre uma base escura e densa (skill *ui-ux-pro-max*), com Inter na
+interface e Fira Code nos tickers. O material segue a regra do próprio estilo: vidro claro
+e brilhante na navegação e nos controles (abas em cápsula, seletores, botões, selos), e
+vidro fosco **escuro** no conteúdo, para os números não perderem contraste. Atrás de tudo,
+uma luz difusa fixa (azul, violeta e verde-água) que o vidro desfoca ao rolar a página;
+cada cartão tem uma borda de luz mais forte no canto de cima, como vidro curvo.
+
+- **Contraste medido na tela, não estimado:** o fundo real de cada cartão é recortado do
+  screenshot e comparado com as cores de texto — pior caso 5,7:1 no texto secundário
+  (mínimo 4,5:1) e 4,3:1 na cor de put (mínimo 3:1 para marcas de dados).
+- **Sem transparência quando pedido:** com "reduzir transparência" ligado no sistema, ou num
+  navegador sem `backdrop-filter`, os painéis ficam opacos.
+
+A cor fica reservada aos dados:
 
 - **Call e put são identidade, não bom/ruim:** azul `#3987e5` e laranja `#d95926`, par
   validado contra a superfície dos cards (`#0B0F1A`) — separação para daltonismo ΔE 26,8.
