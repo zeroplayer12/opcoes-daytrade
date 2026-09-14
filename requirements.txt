@@ -7,6 +7,7 @@
 streamlit>=1.57
 pandas>=2.0
 numpy>=1.24
+plotly>=5.20          # gráfico de candles da aba Operações
 
 # --- Rota A1: endpoint JSON do opcoes.net.br (é a rota que funciona) ---------
 requests>=2.31

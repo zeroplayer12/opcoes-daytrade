@@ -44,6 +44,8 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+import operacoes as ope
+
 try:  # requests é opcional: sem ele a Rota A1 é simplesmente pulada
     import requests
 except ImportError:  # pragma: no cover
@@ -1987,6 +1989,49 @@ section[data-testid="stSidebar"] .sb.first{border-top:none;padding-top:0;margin-
 .efe{display:inline-flex;align-items:center;gap:3px;font:600 11.5px/1 var(--sans);white-space:nowrap;}
 .efe svg.ic{width:13px;height:13px;stroke-width:2.2;}
 .efe.up{color:var(--up);} .efe.down{color:var(--down);} .efe.na{color:var(--t3);font-weight:400;}
+
+/* aba Operações */
+.ops{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin:6px 0 14px;}
+@container (max-width:1100px){ .ops{grid-template-columns:repeat(2,minmax(0,1fr));} }
+@container (max-width:680px){ .ops{grid-template-columns:minmax(0,1fr);} }
+.opc{padding:16px 18px 12px;}
+.opc-h{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;}
+.opc-e{display:block;font:400 12px/1.3 var(--sans);color:var(--t3);margin-top:6px;}
+.sts{display:inline-flex;align-items:center;gap:5px;padding:6px 10px;border-radius:999px;white-space:nowrap;
+  font:600 12px/1 var(--sans);border:1px solid var(--ln2);background:rgba(255,255,255,.05);color:var(--t2);}
+.sts svg.ic{width:13px;height:13px;stroke-width:2.2;}
+.sts.compra{color:var(--up);border-color:rgba(34,197,94,.35);}
+.sts.venda{color:var(--down);border-color:rgba(240,82,82,.35);}
+.opc-res{margin:14px 0 6px;}
+.opc-res .v{font:600 30px/1.05 var(--sans);letter-spacing:-.02em;color:var(--t1);}
+.opc-res .v.up{color:var(--up);} .opc-res .v.down{color:var(--down);}
+.opc-res .d{font:400 12.5px/1.4 var(--sans);color:var(--t2);margin-top:5px;}
+.regua{position:relative;height:52px;margin:4px 6px 8px;}
+.regua .trilho{position:absolute;left:0;right:0;top:22px;height:4px;border-radius:2px;
+  background:linear-gradient(90deg,rgba(240,82,82,.55),rgba(255,255,255,.12) 45%,rgba(34,197,94,.55));}
+.regua .m{position:absolute;top:17px;width:2px;height:14px;border-radius:1px;background:var(--t2);transform:translateX(-50%);}
+.regua .m span{position:absolute;left:50%;transform:translateX(-50%);white-space:nowrap;
+  font:400 10.5px/1 var(--sans);color:var(--t3);top:19px;}
+.regua .m.cima span{top:-15px;}
+.regua .ag{position:absolute;top:18px;width:12px;height:12px;border-radius:50%;transform:translateX(-50%);
+  border:2px solid var(--solido);background:var(--t1);box-shadow:0 0 0 3px rgba(255,255,255,.14);}
+.regua .ag.up{background:var(--up);} .regua .ag.down{background:var(--down);}
+.opc-g{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border-top:1px solid var(--ln);margin-top:4px;}
+.opc-g>div{padding:10px 8px 10px 0;border-bottom:1px solid var(--ln);min-width:0;}
+.opc-g>div:nth-last-child(-n+3){border-bottom:none;}
+.opc-g span{display:block;font:500 10.5px/1 var(--sans);letter-spacing:.07em;text-transform:uppercase;color:var(--t3);}
+.opc-g b{display:block;font:600 14.5px/1.2 var(--sans);margin-top:6px;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;font-variant-numeric:tabular-nums;}
+.opc-g em{display:block;font:400 11.5px/1.3 var(--sans);font-style:normal;color:var(--t3);margin-top:3px;}
+.opc-g em.ok{color:var(--up);}
+.dx .opc-vazio{margin:14px 0 12px;font:400 13px/1.55 var(--sans);color:var(--t2);}
+.opc.pendente .at-tk{color:var(--t2);}
+.opc-t{display:block;font:600 15px/1.2 var(--sans);color:var(--t1);}
+.chips-l{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0 4px;}
+.dx .chips-l .chip{font:600 12.5px/1 var(--mono);font-variant-ligatures:none;padding:7px 10px;color:var(--t1);}
+.st-key-grafico_op{background:var(--vidro);border:1px solid rgba(255,255,255,.075);border-radius:var(--r);
+  padding:12px 10px 4px;box-shadow:inset 0 1px 0 rgba(255,255,255,.09),0 24px 48px -28px rgba(0,0,0,.85);
+  -webkit-backdrop-filter:blur(24px) saturate(165%);backdrop-filter:blur(24px) saturate(165%);}
 /* ================= liquid glass ================= */
 /* fundo: luz difusa fixa atrás do conteúdo, com grão bem leve */
 [data-testid="stApp"]{background-color:#060913!important;background-image:
@@ -2779,7 +2824,8 @@ _ESTADO_PADRAO: dict[str, object] = {
     "du_janela": (DU_MIN_PADRAO, DU_MAX_PADRAO), "todos_venc": False,
     "delta_faixa": (DELTA_MIN_PADRAO, DELTA_MAX_PADRAO), "min_neg": 0, "exigir_neg": True,
     "max_atraso": 1, "incluir_seguinte": True, "taxa_pct": 10.75, "spot_manual": 0.0, "usar_selenium": False,
-    "headless": True, "janela_corr": 60, "auto_corr": True,
+    "headless": True, "janela_corr": 60, "auto_corr": True, "auto_ops": True,
+    "grafico_ativo": "VALE3",
 }
 
 
@@ -2803,13 +2849,16 @@ def main() -> None:
     st.markdown(_CSS, unsafe_allow_html=True)
     _manter_estado()
     cabecalho = st.empty()
-    rotulos = [":material/candlestick_chart: Opções", ":material/public: Correlações"]
-    # ?aba=correlacoes abre direto na aba de mercados (dá para deixar nos favoritos)
-    inicial = rotulos[1] if st.query_params.get("aba") == "correlacoes" else rotulos[0]
-    aba_opcoes, aba_mercados = st.tabs(rotulos, default=inicial, key="aba", on_change="rerun")
-    # Só a aba aberta roda: quem está nas opções não espera pelas cotações
-    # globais, e vice-versa.
-    if aba_mercados.open:
+    rotulos = [":material/candlestick_chart: Opções", ":material/public: Correlações",
+               ":material/monitoring: Operações"]
+    # ?aba=correlacoes ou ?aba=operacoes abre direto na aba (dá para deixar nos favoritos)
+    inicial = {"correlacoes": rotulos[1], "operacoes": rotulos[2]}.get(st.query_params.get("aba"), rotulos[0])
+    aba_opcoes, aba_mercados, aba_operacoes = st.tabs(rotulos, default=inicial, key="aba", on_change="rerun")
+    # Só a aba aberta roda: uma aba não espera pelos dados das outras.
+    if aba_operacoes.open:
+        with aba_operacoes:
+            pagina_operacoes(cabecalho)
+    elif aba_mercados.open:
         with aba_mercados:
             pagina_correlacoes(cabecalho)
     else:
@@ -3073,6 +3122,217 @@ def _painel_mercados() -> None:
           f'<div class="d">Sessão: curva do dia, com o fechamento anterior tracejado · a barra da '
           f'variação usa a mesma escala em todos os quadros</div></div>'
           f'<div class="mk-grid">{quadros}</div></div>')
+
+
+# ---------------- Aba Operações ---------------------------------------------
+
+@cache_dados(ttl=30, show_spinner=False)
+def barras_estrategia(ativo: str) -> pd.DataFrame:
+    """Barras de 5 min dos últimos 5 pregões (cache de 30 s)."""
+    return ope.barras_5min(ativo, "5d")
+
+
+def _reais(v: float) -> str:
+    """+R$ 66,00 / −R$ 12,50 — resultado com sinal na frente do símbolo."""
+    if v is None or pd.isna(v):
+        return "—"
+    sinal = "+" if v > 0.004 else ("−" if v < -0.004 else "")
+    return f"{sinal}R$ {_num(abs(v), 2)}"
+
+
+def _cartao_operacao(ativo: str, est, res, formando, erro: str | None) -> str:
+    """Cartão de um ativo: posição em andamento (alvo, parcial, stop e resultado) ou a falta dela."""
+    if est is None:
+        return (f'<div class="card opc pendente"><div class="opc-h"><div><span class="at-tk">{ativo}</span>'
+                f'<span class="opc-e">estratégia ainda não cadastrada</span></div>'
+                f'<span class="sts">aguardando código</span></div>'
+                f'<p class="opc-vazio">Mande o código da estratégia do Profit para este ativo, com o tempo '
+                f"gráfico, e ele passa a ser acompanhado aqui.</p></div>")
+    cab = f'<div><span class="at-tk">{ativo}</span><span class="opc-e">{_esc(est.nome)} · {est.minutos} min</span></div>'
+    if erro or res is None:
+        return (f'<div class="card opc"><div class="opc-h">{cab}<span class="sts">sem dados</span></div>'
+                f'<p class="opc-vazio">Não consegui montar os candles agora: {_esc(erro)}</p></div>')
+    ultimo = formando if formando is not None else res.candles.iloc[-1]
+    preco, dia = float(ultimo["close"]), ultimo.name.date()
+    do_dia = [o for o in res.operacoes if o.hora_sinal.date() == dia]
+    fechadas = [o for o in do_dia if not o.aberta]
+    no_dia = sum(o.resultado() for o in fechadas)
+    op = res.aberta
+    if op is None:
+        if do_dia:
+            u = do_dia[-1]
+            saida = u.execucoes[-1]
+            texto = (f"Sem operação aberta. A última foi {'compra' if u.lado > 0 else 'venda'} com sinal às "
+                     f"{u.hora_sinal:%H:%M}, encerrada por {saida.rotulo} às {saida.hora:%H:%M} "
+                     f"({_reais(u.resultado())}).")
+        else:
+            texto = "Sem operação aberta e nenhum sinal neste pregão."
+        return (f'<div class="card opc"><div class="opc-h">{cab}<span class="sts">sem posição</span></div>'
+                f'<p class="opc-vazio">{texto}</p><div class="opc-g">'
+                f'<div><span>Preço</span><b>{_moeda(preco)}</b><em>candle das {ultimo.name:%H:%M}</em></div>'
+                f'<div><span>Operações</span><b>{len(fechadas)}</b><em>fechadas no pregão</em></div>'
+                f'<div><span>Resultado</span><b>{_reais(no_dia)}</b><em>do pregão, lote {est.lote}</em></div>'
+                f"</div></div>")
+
+    ent = op.entrada
+    resultado = op.resultado(preco)
+    pct = resultado / (ent.preco * est.lote) * 100
+    lado_txt, classe = ("Comprado", "compra") if op.lado > 0 else ("Vendido", "venda")
+    icone = _ic("sobe") if op.lado > 0 else _ic("desce")
+    parcial = next((e for e in op.execucoes if e.rotulo == "parcial"), None)
+    tom = "up" if resultado > 0 else ("down" if resultado < 0 else "")
+
+    def pos(v: float) -> float:
+        span = op.alvo2 - op.stop
+        return 50.0 if abs(span) < 1e-9 else max(0.0, min(100.0, (v - op.stop) / span * 100))
+
+    regua = (f'<div class="regua"><div class="trilho"></div>'
+             f'<div class="m" style="left:0%"><span>stop</span></div>'
+             f'<div class="m cima" style="left:{pos(op.preco_sinal):.1f}%"><span>entrada</span></div>'
+             f'<div class="m cima" style="left:{pos(op.alvo1):.1f}%"><span>parcial</span></div>'
+             f'<div class="m" style="left:100%"><span>alvo</span></div>'
+             f'<div class="ag {tom}" style="left:{pos(preco):.1f}%" title="preço atual {_moeda(preco)}"></div></div>')
+    falta = abs(op.alvo2 - preco) / preco * 100
+    parcial_txt = (f'<em class="ok">executada às {parcial.hora:%H:%M}</em>' if parcial
+                   else "<em>pendente</em>")
+    stop_txt = "no zero a zero" if op.stop_movido else f"risco de {_num(abs(op.stop - ent.preco) / ent.preco * 100, 2)}%"
+    return (f'<div class="card opc"><div class="opc-h">{cab}<span class="sts {classe}">{icone}{lado_txt}</span></div>'
+            f'<div class="opc-res"><div class="v {tom}">{_reais(resultado)}</div>'
+            f'<div class="d">{_num(pct, 2, sufixo="%", sinal=True)} sobre a entrada · {_num(abs(op.qtd), 0)} de '
+            f"{est.lote} ações abertas</div></div>{regua}"
+            f'<div class="opc-g">'
+            f'<div><span>Entrada</span><b>{_moeda(ent.preco)}</b><em>{ent.hora:%H:%M} · sinal {op.hora_sinal:%H:%M}</em></div>'
+            f'<div><span>Preço atual</span><b>{_moeda(preco)}</b><em>candle das {ultimo.name:%H:%M}</em></div>'
+            f'<div><span>Parcial (1R)</span><b>{_moeda(op.alvo1)}</b>{parcial_txt}</div>'
+            f'<div><span>Alvo final</span><b>{_moeda(op.alvo2)}</b><em>faltam {_num(falta, 2)}%</em></div>'
+            f'<div><span>Stop</span><b>{_moeda(op.stop)}</b><em>{stop_txt}</em></div>'
+            f'<div><span>No pregão</span><b>{_reais(no_dia)}</b><em>{len(fechadas)} fechada(s)</em></div>'
+            f"</div></div>")
+
+
+def _cartao_pendentes(ativos: list[str]) -> str:
+    """Os ativos ainda sem estratégia cadastrada, num cartão só."""
+    chips = "".join(f'<span class="chip">{a}</span>' for a in ativos)
+    return (f'<div class="card opc pendente"><div class="opc-h"><div><span class="opc-t">Aguardando código</span>'
+            f'<span class="opc-e">{len(ativos)} ativos sem estratégia cadastrada</span></div></div>'
+            f'<div class="chips-l">{chips}</div>'
+            f'<p class="opc-vazio">Mande o código de cada estratégia do Profit, com o tempo gráfico, e o ativo '
+            f"ganha um cartão próprio aqui.</p></div>")
+
+
+def _grafico_operacao(res, formando):
+    """Candles do pregão como no Profit: pintados de verde ou vermelho no sinal, os demais em cinza;
+    médias, VWAP, entradas e saídas, e as linhas de alvo, parcial e stop da operação."""
+    import plotly.graph_objects as go
+
+    d = res.candles
+    if formando is not None:
+        d = pd.concat([d, formando.to_frame().T])
+    dia = d.index[-1].date()
+    d = d[[t.date() == dia for t in d.index]].copy()
+    for col in ("open", "high", "low", "close"):
+        d[col] = d[col].astype(float)
+    fig = go.Figure()
+
+    def velas(mascara, cor_alta, cor_baixa, borda_alta, borda_baixa):
+        sub = d[mascara]
+        if not sub.empty:
+            fig.add_trace(go.Candlestick(
+                x=sub.index, open=sub["open"], high=sub["high"], low=sub["low"], close=sub["close"],
+                increasing=dict(fillcolor=cor_alta, line=dict(color=borda_alta, width=1)),
+                decreasing=dict(fillcolor=cor_baixa, line=dict(color=borda_baixa, width=1)),
+                showlegend=False, hoverinfo="skip", whiskerwidth=0.3))
+
+    cor = d["cor"].fillna("")
+    velas(cor == "", "rgba(139,151,173,.30)", "#4A5670", "#8B97AD", "#6B7790")
+    velas(cor == "verde", "#22C55E", "#22C55E", "#22C55E", "#22C55E")
+    velas(cor == "vermelho", "#F05252", "#F05252", "#F05252", "#F05252")
+    for col, nome, cor_l, larg, traco in (("ema9", "Média 9", "#86b6ef", 1.2, "solid"),
+                                          ("ema21", "Média 21", "#3987e5", 1.2, "solid"),
+                                          ("ema50", "Média 50", "#1c5cab", 1.4, "solid"),
+                                          ("vwap", "VWAP", "#c98500", 1.3, "dot")):
+        if col in d:
+            fig.add_trace(go.Scatter(x=d.index, y=d[col].astype(float), mode="lines", name=nome,
+                                     line=dict(color=cor_l, width=larg, dash=traco), hoverinfo="skip"))
+
+    fim = d.index[-1] + pd.Timedelta(minutes=res.estrategia.minutos)
+    op = res.aberta
+    if op is not None and op.entrada is not None:
+        linhas = [(op.alvo2, "alvo", "#22C55E", "solid"), (op.alvo1, "parcial", "#22C55E", "dash")]
+        if abs(op.stop - op.preco_sinal) >= 0.05:
+            linhas.append((op.preco_sinal, "entrada", "#E2E8F0", "dot"))
+        linhas.append((op.stop, "stop no zero a zero" if op.stop_movido else "stop", "#F05252", "solid"))
+        for preco, rotulo, cor_l, traco in linhas:
+            fig.add_shape(type="line", x0=op.entrada.hora, x1=fim, y0=preco, y1=preco,
+                          line=dict(color=cor_l, width=1.2, dash=traco))
+            fig.add_annotation(x=fim, y=preco, text=f"{rotulo} {_num(preco, 2)}", showarrow=False,
+                               xanchor="left", font=dict(size=11, color=cor_l), bgcolor="rgba(11,15,26,.75)")
+    for o in res.operacoes:
+        for e in o.execucoes:
+            if e.hora.date() != dia:
+                continue
+            compra = e.qtd > 0
+            fig.add_trace(go.Scatter(
+                x=[e.hora], y=[e.preco], mode="markers", showlegend=False,
+                marker=dict(symbol="triangle-up" if compra else "triangle-down", size=11,
+                            color="#22C55E" if compra else "#F05252", line=dict(color="#05070C", width=1)),
+                hovertemplate=f"{e.rotulo} · {'compra' if compra else 'venda'} {abs(e.qtd):g} a R$ %{{y:.2f}}"
+                              "<br>%{x|%H:%M}<extra></extra>"))
+    fig.update_layout(
+        height=470, margin=dict(l=8, r=150, t=34, b=24), separators=",.",
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Inter, system-ui, sans-serif", size=12, color="#A9B4C8"),
+        xaxis=dict(rangeslider=dict(visible=False), showgrid=False, tickformat="%H:%M",
+                   linecolor="rgba(255,255,255,.12)", range=[d.index[0], fim + pd.Timedelta(minutes=30)]),
+        yaxis=dict(side="right", gridcolor="rgba(255,255,255,.06)", zeroline=False, tickformat=".2f"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.01, x=0, font=dict(size=11)),
+        hoverlabel=dict(bgcolor="#111829", bordercolor="rgba(255,255,255,.15)", font=dict(color="#F1F5F9")),
+        hovermode="closest")
+    return fig
+
+
+def pagina_operacoes(cabecalho) -> None:
+    with st.sidebar:
+        _sb("Operações", primeiro=True)
+        auto = st.toggle("Atualizar sozinho a cada 30 s", key="auto_ops")
+        _sb("Sobre os dados")
+        st.caption("As estratégias são traduções do código do Profit. Sinal no fechamento do candle, entrada "
+                   "na abertura do seguinte e posição zerada no fim do pregão, como no backtest do Profit.")
+        st.caption("Por enquanto os candles vêm do Yahoo Finance, com cerca de 15 min de atraso. Assim que a "
+                   "exportação RTD do Profit estiver ligada, passam a vir dele, em tempo real.")
+    _html(_moldura("Suas estratégias do Profit: posição, alvo, parcial, stop e resultado",
+                   f'<span class="pill">{_ic("fonte")}<b>Yahoo Finance</b> · atraso de ~15 min</span>'
+                   f'<span class="pill">{_ic("relogio")}'
+                   + ("Atualiza a cada <b>30 s</b>" if auto else "Atualização <b>manual</b>") + "</span>"),
+          cabecalho)
+    st.fragment(_painel_operacoes, run_every=30 if auto else None)()
+    _rodape("Sinais recalculados a partir do código das estratégias do Profit — confira no Profit antes de agir.")
+
+
+def _painel_operacoes() -> None:
+    """Cartões dos seis ativos e o gráfico do ativo escolhido; roda como fragmento."""
+    resultados, erros = {}, {}
+    for ativo, est in ope.ESTRATEGIAS.items():
+        try:
+            resultados[ativo] = ope.situacao(est, barras_estrategia(ativo))
+        except Exception as exc:
+            erros[ativo] = str(exc)
+    cartoes = "".join(
+        _cartao_operacao(a, ope.ESTRATEGIAS[a], *(resultados.get(a) or (None, None)), erros.get(a))
+        for a in ATIVOS if a in ope.ESTRATEGIAS)
+    faltam = [a for a in ATIVOS if a not in ope.ESTRATEGIAS]
+    if faltam:
+        cartoes += _cartao_pendentes(faltam)
+    _html(f'<div class="dx"><div class="ops">{cartoes}</div></div>')
+    if not resultados:
+        return
+    disponiveis = [a for a in ATIVOS if a in resultados]
+    if st.session_state.get("grafico_ativo") not in disponiveis:
+        st.session_state["grafico_ativo"] = disponiveis[0]
+    ativo = st.segmented_control("Gráfico", disponiveis, key="grafico_ativo", required=True) or disponiveis[0]
+    res, formando = resultados[ativo]
+    with st.container(key="grafico_op"):
+        st.plotly_chart(_grafico_operacao(res, formando), config={"displayModeBar": False}, **_LARGURA)
 
 
 if __name__ == "__main__":

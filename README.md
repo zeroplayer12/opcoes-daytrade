@@ -271,6 +271,27 @@ A cor fica reservada aos dados:
 - O layout segue a largura do contêiner: em telas ultralargas, call, gráfico e put ficam
   lado a lado; no celular, tudo empilha.
 
+## Aba Operações
+
+Acompanha as estratégias que você roda no Profit: para cada ativo, se há operação em
+andamento, com entrada, parcial, alvo final, stop e o resultado em R$ e em %, mais o
+gráfico de candles do pregão com as linhas da operação. Abre direto em
+`http://localhost:8501/?aba=operacoes`.
+
+- **As estratégias são traduzidas** do código do Profit para `operacoes.py` (hoje: VALE3,
+  10 min). A simulação segue o backtest do Profit: o código roda no fechamento do candle,
+  a entrada é na abertura do candle seguinte, ordens de saída valem só para o próximo
+  candle e a posição é zerada no último candle do pregão. Quando um candle toca stop e
+  alvo, o motor assume o stop.
+- **Conferência obrigatória:** a tradução só vale depois de bater, operação por operação,
+  com a lista de operações do backtest do Profit no mesmo período.
+- **Dados:** por enquanto, barras de 5 min do Yahoo (cerca de 15 min de atraso),
+  agrupadas no tempo gráfico da estratégia. O tempo real vem do RTD do Profit
+  (`=RTD("RTDTrading.RTDServer";; "VALE3_B_0"; "ULT")`), que só responde para ativos
+  cadastrados na exportação DDE/RTD do Profit — lista que estava vazia. Como o Profit
+  grava essa lista ao sair, ela só pode ser editada com ele fechado.
+- Resultado em R$ para o lote de cada estratégia (100 ações), sem custos.
+
 ## Robustez a mudança de colunas
 
 O site pode renomear colunas a qualquer momento. `mapear_colunas()` resolve isso com
