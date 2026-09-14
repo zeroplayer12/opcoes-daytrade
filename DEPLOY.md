@@ -72,8 +72,8 @@ URL deste deploy: <https://zeroplayer12-opcoes-daytrade-app-2z3e1c.streamlit.app
   `zeroplayer12`, inclusive no celular. Tornar público é um clique em
   Share → Make this app public, mas aí qualquer pessoa com o link acessa.
 
-- **O app dorme por inatividade — e rápido.** Publicado em 09/09/2026, já estava
-  dormindo em 11/09, menos de 48h sem acesso. Ao abrir aparece *"This app has gone
+- **O app dorme por inatividade — e rápido.** Pela documentação oficial, **todo app sem
+  visitas por 12 horas dorme** — na prática, quase toda manhã. Ao abrir aparece *"This app has gone
   to sleep due to inactivity"* com o botão **Yes, get this app back up!**; o
   contêiner volta em segundos (16 s em 11/09), mas a tela *"Your app is in the
   oven"* pode ficar parada com o app já no ar — **recarregue a página (F5)**.
