@@ -181,9 +181,9 @@ Para a checagem de antes da abertura: como foram a madrugada e a manhã lá fora
 
 | Bloco | O que mostra |
 |---|---|
-| **Pulso** | Ibovespa futuro, S&P 500 e Nasdaq futuros, Brent, minério de ferro, Hang Seng, Dólar/Real e EWZ: último, variação e a curva da sessão |
-| **Correlação com seus ativos** | matriz dos 6 ativos × 12 mercados (EWZ, S&P 500, VIX, Hang Seng, Brent, Minério, Cobre, Rio Tinto, Ouro, Dólar, DXY, Treasury 10 anos), janela de 20, 60 ou 120 pregões; na última coluna, os dois mercados mais correlacionados com cada ativo e quanto andam agora |
-| **Cotações por mercado** | 47 mercados em 8 quadros — EUA, Brasil (Ibovespa futuro, ADRs e EWZ), Europa, Ásia, Energia, Metais e mineração, Câmbio e juros, Agrícolas |
+| **Pulso** | Ibovespa e dólar futuros, S&P 500 e Nasdaq futuros, Brent, minério de ferro, Hang Seng e EWZ: último, variação e a curva da sessão |
+| **Correlação com seus ativos** | matriz dos 6 ativos × 12 mercados (EWZ, S&P 500, VIX, Hang Seng, Brent, Minério, Cobre, Rio Tinto, Ouro, Dólar, DXY, Treasury 10 anos). Janela **Pregão de hoje** (barras de 5 min) ou de 20, 60 e 120 pregões; na última coluna, os dois mercados mais correlacionados com cada ativo, quanto andam agora e a **pressão** que isso sugere. Um guia *Como ler* fica embaixo da tabela |
+| **Cotações por mercado** | 48 mercados em 8 quadros — EUA, Brasil (Ibovespa e dólar futuros, ADRs e EWZ), Europa, Ásia, Energia, Metais e mineração, Câmbio e juros, Agrícolas |
 
 A aba se atualiza sozinha a cada minuto (desligável na barra lateral) e só roda quando
 está aberta: quem fica na aba Opções não espera pelas cotações globais.
@@ -224,6 +224,17 @@ Pearson dos retornos diários, com três cuidados:
 
 A Ásia fecha antes da B3 abrir: ali o número mede o quanto o pregão asiático antecipa o
 nosso. Correlação passada não garante o movimento de hoje.
+
+**Pregão de hoje.** Mesma conta, com retornos de 5 minutos desde a abertura da B3 (antes
+dela, o último pregão). As barras vêm do Yahoo com o carimbo arredondado para o múltiplo
+de 5 min, e cada par precisa de ao menos 8 barras em comum (40 min). Ásia e minério não
+negociam no horário da B3 e ficam em branco.
+
+**Pressão.** Para cada ativo, soma ρ × (variação do mercado desde o fechamento anterior ÷
+o desvio-padrão diário dele nos últimos 60 pregões), só com os dois mais correlacionados
+e só se |ρ| ≥ 0,3. Dividir pelo desvio-padrão impede que o VIX, que anda 10% num dia
+comum, pese mais que o S&P, que anda 1%. Abaixo de 0,5 em módulo, fica "sem direção
+clara". É um resumo do que a tabela já mostra, não um sinal de entrada.
 
 ## Design
 
