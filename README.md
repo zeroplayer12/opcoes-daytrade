@@ -288,11 +288,20 @@ gráfico de candles do pregão com as linhas da operação. Abre direto em
   histórico. Quando um candle toca stop e alvo, o motor assume o stop.
 - **Conferência obrigatória:** a tradução só vale depois de bater, operação por operação,
   com a lista de operações do backtest do Profit no mesmo período.
-- **Dados:** por enquanto, barras de 5 min do Yahoo (cerca de 15 min de atraso),
-  agrupadas no tempo gráfico da estratégia. O tempo real vem do RTD do Profit
-  (`=RTD("RTDTrading.RTDServer";; "VALE3_B_0"; "ULT")`), que só responde para ativos
-  cadastrados na exportação DDE/RTD do Profit — lista que estava vazia. Como o Profit
-  grava essa lista ao sair, ela só pode ser editada com ele fechado.
+- **Tempo real pelo Profit:** o `coletor_rtd.py` lê as cotações dos 6 ativos no servidor
+  RTD do Profit (o mesmo do Excel: `=RTD("RTDTrading.RTDServer";; "VALE3_B_0"; "ULT")`,
+  campos ULT, QTT, VOL, NEG e HOR) e grava cada mudança em `dados_rt/AAAA-MM-DD.csv`.
+  A aba monta as barras de 5 min do pregão a partir daí e atualiza a cada 5 s. Ele sobe
+  junto com o painel (`iniciar-painel.cmd`), espera o Profit abrir, reconecta se o
+  Profit fechar, roda uma instância só e registra tudo em `coletor.log`; o
+  `parar-painel.cmd` encerra os dois.
+- **Exige no Profit:** *Exportação em Tempo Real (RTD / DDE)* com o RTD ativado e os 6
+  ativos na lista. Com o RTD desligado, o servidor quebra ao receber o pedido.
+- **Sem o coletor** (ou no Streamlit Cloud), o pregão de hoje vem do Yahoo, com cerca de
+  15 min de atraso; o histórico dos dias anteriores vem sempre do Yahoo. Se o coletor
+  começar com o pregão andando, as barras anteriores a ele também ficam com o Yahoo.
+- Máxima e mínima de cada barra saem das cotações anotadas, então um pico entre duas
+  atualizações pode escapar.
 - Resultado em R$ para o lote de cada estratégia (100 ações), sem custos.
 
 ## Robustez a mudança de colunas

@@ -18,6 +18,9 @@ env/
 *.xls
 *.xlsm
 
+# Cotações gravadas pelo coletor RTD do Profit (ficam só no PC)
+dados_rt/
+
 # Logs e temporários
 *.log
 .DS_Store

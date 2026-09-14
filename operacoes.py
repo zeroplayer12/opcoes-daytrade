@@ -435,6 +435,50 @@ def barras_5min(ativo: str, faixa: str = "5d") -> pd.DataFrame:
     return df.dropna(subset=["open", "high", "low", "close"])
 
 
+def barras_rtd(ativo: str, pasta, dia) -> pd.DataFrame:
+    """Barras de 5 min do pregão `dia` a partir das cotações gravadas pelo coletor RTD.
+
+    Máxima e mínima saem das cotações anotadas (uma por mudança), então um pico
+    entre duas atualizações pode escapar. O volume é a diferença da quantidade
+    acumulada do dia; a primeira linha, se o coletor começou com o pregão em
+    andamento, não entra no volume (seria o acumulado até ali).
+    """
+    import pathlib
+    arq = pathlib.Path(pasta) / f"{dia:%Y-%m-%d}.csv"
+    if not arq.exists():
+        return pd.DataFrame()
+    df = pd.read_csv(arq)
+    df = df[(df["ativo"] == ativo) & (df["ult"] > 0)]
+    if df.empty:
+        return pd.DataFrame()
+    idx = pd.to_datetime(df["ts"], unit="s", utc=True).dt.tz_convert(BRT)
+    s = pd.DataFrame({"ult": df["ult"].to_numpy(), "qtt": df["qtt"].to_numpy()}, index=idx.to_numpy())
+    s.index = pd.DatetimeIndex(s.index).tz_convert(BRT)
+    s = s[(s.index.strftime("%H:%M") >= "10:00") & (s.index.strftime("%H:%M") < "17:10")]
+    if s.empty:
+        return pd.DataFrame()
+    vol = s["qtt"].diff().clip(lower=0).fillna(0)
+    agrup = s.assign(vol=vol).resample("5min", label="left", closed="left", origin="start_day")
+    barras = pd.DataFrame({"open": agrup["ult"].first(), "high": agrup["ult"].max(), "low": agrup["ult"].min(),
+                           "close": agrup["ult"].last(), "volume": agrup["vol"].sum()}).dropna(subset=["open"])
+    barras.attrs["inicio"] = s.index[0]
+    barras.attrs["ultima"] = s.index[-1]
+    return barras
+
+
+def juntar_barras(yahoo: pd.DataFrame, rtd: pd.DataFrame) -> pd.DataFrame:
+    """Histórico do Yahoo com o pregão de hoje vindo do RTD a partir da primeira barra que o
+    coletor pegou inteira; antes disso (coletor ligado com o pregão andando) fica o Yahoo."""
+    if rtd is None or rtd.empty:
+        return yahoo
+    inicio = rtd.attrs.get("inicio", rtd.index[0])
+    primeira_inteira = rtd.index[0] if inicio <= rtd.index[0] else rtd.index[0] + pd.Timedelta(minutes=5)
+    rtd = rtd[rtd.index >= primeira_inteira]
+    if rtd.empty:
+        return yahoo
+    return pd.concat([yahoo[yahoo.index < primeira_inteira], rtd]).sort_index()
+
+
 def situacao(est: Estrategia, barras_5m: pd.DataFrame,
              agora: datetime | None = None) -> tuple[Resultado, pd.Series | None]:
     """Estado da estratégia agora: simula os candles fechados e passa o candle em

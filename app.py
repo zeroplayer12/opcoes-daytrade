@@ -38,6 +38,7 @@ import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 from html import escape as _escape
+from pathlib import Path
 from urllib.parse import urlencode
 
 import numpy as np
@@ -3137,11 +3138,28 @@ def _barras_recentes(ativo: str) -> pd.DataFrame:
     return ope.barras_5min(ativo, "1d")
 
 
+PASTA_RT = Path(__file__).resolve().parent / "dados_rt"   # onde o coletor_rtd.py grava
+
+
 def barras_estrategia(ativo: str) -> pd.DataFrame:
     """Histórico longo mais o pregão de agora. As estratégias carregam posição de um
-    dia para o outro, então a simulação precisa começar bem antes da operação aberta."""
+    dia para o outro, então a simulação precisa começar bem antes da operação aberta.
+    O pregão de hoje vem do RTD do Profit quando o coletor está gravando; senão, do Yahoo."""
     barras = pd.concat([_barras_historico(ativo), _barras_recentes(ativo)])
-    return barras[~barras.index.duplicated(keep="last")].sort_index()
+    barras = barras[~barras.index.duplicated(keep="last")].sort_index()
+    return ope.juntar_barras(barras, ope.barras_rtd(ativo, PASTA_RT, datetime.now(BRT).date()))
+
+
+def _estado_rtd() -> tuple[str, str]:
+    """('vivo' | 'encerrado' | 'fora', hora da última cotação) conforme o arquivo do coletor."""
+    arq = PASTA_RT / f"{datetime.now(BRT):%Y-%m-%d}.csv"
+    if not arq.exists():
+        return "fora", ""
+    quando = datetime.fromtimestamp(arq.stat().st_mtime, BRT)
+    agora = datetime.now(BRT)
+    if (agora - quando).total_seconds() < 180 and "10:00" <= agora.strftime("%H:%M") < "17:10":
+        return "vivo", f"{quando:%H:%M:%S}"
+    return ("encerrado" if agora.strftime("%H:%M") >= "17:10" else "fora"), f"{quando:%H:%M}"
 
 
 def _quando(t, dia) -> str:
@@ -3319,19 +3337,28 @@ def _grafico_operacao(res, formando):
 def pagina_operacoes(cabecalho) -> None:
     with st.sidebar:
         _sb("Operações", primeiro=True)
-        auto = st.toggle("Atualizar sozinho a cada 30 s", key="auto_ops")
+        auto = st.toggle("Atualizar sozinho", key="auto_ops",
+                         help="A cada 5 s com o Profit ao vivo; a cada 30 s com os dados do Yahoo.")
         _sb("Sobre os dados")
         st.caption("As estratégias são traduções do código do Profit. Sinal no fechamento do candle e entrada "
                    "na abertura do seguinte, como no backtest do Profit; a posição segue de um pregão para o "
                    "outro até o alvo ou o stop.")
-        st.caption("Por enquanto os candles vêm do Yahoo Finance, com cerca de 15 min de atraso. Assim que a "
-                   "exportação RTD do Profit estiver ligada, passam a vir dele, em tempo real.")
+        st.caption("O pregão de hoje vem do Profit em tempo real, pelo RTD, enquanto o coletor_rtd.py estiver "
+                   "gravando (ele sobe junto com o painel). Sem ele, os candles vêm do Yahoo, com cerca de 15 min "
+                   "de atraso; o histórico dos dias anteriores vem sempre do Yahoo.")
+    estado, hora = _estado_rtd()
+    if estado == "vivo":
+        fonte = f'<span class="pill"><span class="dot"></span><b>Profit</b> · tempo real</span>'
+    elif estado == "encerrado":
+        fonte = f'<span class="pill"><span class="dot off"></span><b>Profit</b> · pregão encerrado ({hora})</span>'
+    else:
+        fonte = f'<span class="pill">{_ic("fonte")}<b>Yahoo Finance</b> · atraso de ~15 min</span>'
+    ritmo = 5 if estado == "vivo" else 30
     _html(_moldura("Suas estratégias do Profit: posição, alvo, parcial, stop e resultado",
-                   f'<span class="pill">{_ic("fonte")}<b>Yahoo Finance</b> · atraso de ~15 min</span>'
-                   f'<span class="pill">{_ic("relogio")}'
-                   + ("Atualiza a cada <b>30 s</b>" if auto else "Atualização <b>manual</b>") + "</span>"),
+                   fonte + f'<span class="pill">{_ic("relogio")}'
+                   + (f"Atualiza a cada <b>{ritmo} s</b>" if auto else "Atualização <b>manual</b>") + "</span>"),
           cabecalho)
-    st.fragment(_painel_operacoes, run_every=30 if auto else None)()
+    st.fragment(_painel_operacoes, run_every=ritmo if auto else None)()
     _rodape("Sinais recalculados a partir do código das estratégias do Profit — confira no Profit antes de agir.")
 
 
