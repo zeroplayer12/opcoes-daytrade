@@ -278,8 +278,10 @@ andamento, com entrada, parcial, alvo final, stop e o resultado em R$ e em %, ma
 gráfico de candles do pregão com as linhas da operação. Abre direto em
 `http://localhost:8501/?aba=operacoes`.
 
-- **As estratégias são traduzidas** do código do Profit para `operacoes.py` (hoje: VALE3,
-  10 min). A simulação segue o backtest do Profit: o código roda no fechamento do candle,
+- **As estratégias são traduzidas** do código do Profit para `operacoes.py` (hoje: VALE3
+  em 10 min e PETR4 em 20 min). Dois pontos da PETR4 ainda dependem da conferência:
+  `ADX(14, 0)` foi lido como ADX sem suavização (o próprio DX) e `RSI(14, 0)` como o IFR
+  clássico de Wilder. A simulação segue o backtest do Profit: o código roda no fechamento do candle,
   a entrada é na abertura do candle seguinte e ordens de saída valem só para o próximo
   candle. A posição **não é zerada às 17h**: segue de um pregão para o outro até o alvo
   ou o stop, como nas estratégias do Profit — por isso a simulação parte de 60 dias de

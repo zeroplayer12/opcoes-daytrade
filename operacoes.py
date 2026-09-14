@@ -60,7 +60,16 @@ def adx(h: pd.Series, l: pd.Series, c: pd.Series, n_di: int = 14, n_adx: int = 1
     di_mais = 100 * _wilder(dm_mais, n_di) / atr
     di_menos = 100 * _wilder(dm_menos, n_di) / atr
     dx = 100 * (di_mais - di_menos).abs() / (di_mais + di_menos).replace(0, np.nan)
-    return _wilder(dx.fillna(0), n_adx)
+    # ADX(14, 0): sem suavização, o ADX é o próprio DX (a conferir contra o Profit)
+    return dx.fillna(0) if n_adx == 0 else _wilder(dx.fillna(0), n_adx)
+
+
+def rsi(c: pd.Series, n: int = 14) -> pd.Series:
+    """RSI (IFR) de Wilder, o clássico; RSI(14, 0) no Profit (tipo 0 a conferir)."""
+    d = c.diff()
+    ganho = _wilder(d.clip(lower=0), n)
+    perda = _wilder((-d).clip(lower=0), n)
+    return (100 - 100 / (1 + ganho / perda.replace(0, np.nan))).fillna(100)
 
 
 def vwap_diario(df: pd.DataFrame) -> pd.Series:
@@ -165,6 +174,7 @@ class Estrategia:
     lote = 100
     ultimo_candle = "16:50"   # abertura do último candle do pregão (horário de verão dos EUA)
     zera_no_fim_do_dia = False  # as estratégias dele carregam a posição de um dia para o outro
+    breakeven = True
 
     def indicadores(self, df: pd.DataFrame) -> pd.DataFrame:
         raise NotImplementedError
@@ -172,6 +182,31 @@ class Estrategia:
     def no_fechamento(self, barra: pd.Series, op: Operacao | None) -> tuple[list[Ordem], str | None, Operacao | None]:
         """Devolve (ordens para o próximo candle, cor do candle, operação nova se houver sinal)."""
         raise NotImplementedError
+
+    # ---- blocos que as estratégias dele repetem -------------------------------
+    def _entrada(self, b: pd.Series, lado: int, stop: float, fator_parcial: float, rr_final: float):
+        """Seção 6 do NTSL: pinta o candle, entra a mercado e fixa stop, parcial e alvo."""
+        entrada = b["close"]
+        risco = (entrada - stop) * lado
+        op = Operacao(lado, b.name, entrada, stop, entrada + lado * risco * fator_parcial,
+                      entrada + lado * risco * rr_final, stop=stop)
+        return [Ordem("mercado", lado, self.lote, rotulo="entrada")], ("verde" if lado > 0 else "vermelho"), op
+
+    def _gerenciar(self, b: pd.Series, op: Operacao, nivel_breakeven: float) -> list[Ordem]:
+        """Seção 7 do NTSL: parcial de 50% na alvo 1 com stop no zero a zero, breakeven num
+        múltiplo do risco, e a cada candle o alvo final e o stop (stop-limite de 0,05)."""
+        lado, entrada = op.lado, op.preco_sinal
+        risco = (entrada - op.stop_inicial) * lado
+        ordens = []
+        if not op.parcial_feita and (b["close"] - op.alvo1) * lado >= 0:
+            ordens.append(Ordem("limite", -lado, abs(op.qtd) / 2, op.alvo1, "parcial"))
+            op.stop, op.stop_movido, op.parcial_feita = entrada + 0.01 * lado, True, True
+        elif self.breakeven and not op.stop_movido and \
+                (b["close"] - (entrada + lado * risco * nivel_breakeven)) * lado >= 0:
+            op.stop, op.stop_movido = entrada + 0.01 * lado, True
+        ordens.append(Ordem("limite", -lado, None, op.alvo2, "alvo"))
+        ordens.append(Ordem("stop", -lado, None, op.stop, "stop"))
+        return ordens
 
 
 class Vale3(Estrategia):
@@ -207,35 +242,69 @@ class Vale3(Estrategia):
         return x
 
     def no_fechamento(self, b: pd.Series, op: Operacao | None):
-        ordens: list[Ordem] = []
-        cor, nova = None, None
         if op is None:
-            # 6. entrada e coloração
             if b["sinal_compra"] or b["sinal_venda"]:
                 lado = 1 if b["sinal_compra"] else -1
-                cor = "verde" if lado > 0 else "vermelho"
-                entrada = b["close"]
-                stop = b["stop_compra"] if lado > 0 else b["stop_venda"]
-                risco = (entrada - stop) * lado
-                nova = Operacao(lado, b.name, entrada, stop, entrada + lado * risco,
-                                entrada + lado * risco * self.rr, stop=stop)
-                ordens.append(Ordem("mercado", lado, self.lote, rotulo="entrada"))
-            return ordens, cor, nova
-
-        # 7. gerenciamento: parcial de 50% em 1R, breakeven em 1,5R, alvo e stop
-        lado, entrada = op.lado, op.preco_sinal
-        risco = (entrada - op.stop_inicial) * lado
-        if not op.parcial_feita and (b["close"] - op.alvo1) * lado >= 0:
-            ordens.append(Ordem("limite", -lado, abs(op.qtd) / 2, op.alvo1, "parcial"))
-            op.stop, op.stop_movido, op.parcial_feita = entrada + 0.01 * lado, True, True
-        if self.breakeven and not op.stop_movido and (b["close"] - (entrada + lado * risco * 1.5)) * lado >= 0:
-            op.stop, op.stop_movido = entrada + 0.01 * lado, True
-        ordens.append(Ordem("limite", -lado, None, op.alvo2, "alvo"))
-        ordens.append(Ordem("stop", -lado, None, op.stop, "stop"))
-        return ordens, cor, nova
+                return self._entrada(b, lado, b["stop_compra"] if lado > 0 else b["stop_venda"], 1.0, self.rr)
+            return [], None, None
+        return self._gerenciar(b, op, 1.5), None, None
 
 
-ESTRATEGIAS: dict[str, Estrategia] = {"VALE3": Vale3()}
+class Petr4(Estrategia):
+    """Estratégia de Execução PETR4 (Profit), 20 minutos.
+
+    A tendência da VALE3 (médias 9 > 21 > 50 e VWAP) mais IFR entre 55 e 80
+    (compra) ou 20 e 45 (venda), MACD 12/26 acima ou abaixo do sinal de 9,
+    média de 9 subindo ou descendo, ADX(14, 0) > 20, candle com corpo maior que
+    5% da amplitude média de 14, volume acima da média de 20 e stop (extremo de
+    4 candles ± 0,03) a no máximo 1,60%. Parcial de 50% em 1,5R, alvo final em
+    2,9R, breakeven em 1,5R.
+    """
+    ativo, nome, minutos, lote = "PETR4", "Execução PETR4", 20, 100
+    ultimo_candle = "16:40"
+
+    def __init__(self, rr_final: float = 2.90, fator_parcial: float = 1.50, filtro_amplitude: float = 0.05,
+                 breakeven: bool = True, adx_min: float = 20.0, max_stop_pct: float = 1.60):
+        self.rr, self.fator_parcial, self.amplitude = rr_final, fator_parcial, filtro_amplitude
+        self.breakeven, self.adx_min, self.max_stop = breakeven, adx_min, max_stop_pct
+
+    def indicadores(self, df: pd.DataFrame) -> pd.DataFrame:
+        c, h, l, o = df["close"], df["high"], df["low"], df["open"]
+        x = pd.DataFrame(index=df.index)
+        x["ema9"], x["ema21"], x["ema50"] = media_exp(c, 9), media_exp(c, 21), media_exp(c, 50)
+        x["vwap"] = vwap_diario(df)
+        x["vol_media"] = media(df["volume"], 20)
+        x["rsi"] = rsi(c, 14)
+        x["adx"] = adx(h, l, c, 14, 0)
+        x["macd"] = media_exp(c, 12) - media_exp(c, 26)
+        x["macd_sinal"] = media_exp(x["macd"], 9)
+        alta = (x["ema9"] > x["ema21"]) & (x["ema21"] > x["ema50"]) & (c > x["vwap"])
+        baixa = (x["ema9"] < x["ema21"]) & (x["ema21"] < x["ema50"]) & (c < x["vwap"])
+        filtros = (df["volume"] > x["vol_media"]) & ((c - o).abs() > media(h - l, 14) * self.amplitude) \
+            & (x["adx"] > self.adx_min)
+        x["stop_compra"] = l.rolling(4).min() - 0.03
+        x["stop_venda"] = h.rolling(4).max() + 0.03
+        stop_ok_c = (c - x["stop_compra"]) / c <= self.max_stop / 100
+        stop_ok_v = (x["stop_venda"] - c) / c <= self.max_stop / 100
+        x["sinal_compra"] = (alta & filtros & stop_ok_c & (x["rsi"] > 55) & (x["rsi"] < 80)
+                             & (x["macd"] > x["macd_sinal"]) & (x["ema9"] > x["ema9"].shift(1))
+                             & (c > h.rolling(2).max().shift(1)) & (c > o))
+        x["sinal_venda"] = (baixa & filtros & stop_ok_v & (x["rsi"] < 45) & (x["rsi"] > 20)
+                            & (x["macd"] < x["macd_sinal"]) & (x["ema9"] < x["ema9"].shift(1))
+                            & (c < l.rolling(2).min().shift(1)) & (c < o))
+        return x
+
+    def no_fechamento(self, b: pd.Series, op: Operacao | None):
+        if op is None:
+            if b["sinal_compra"] or b["sinal_venda"]:
+                lado = 1 if b["sinal_compra"] else -1
+                return self._entrada(b, lado, b["stop_compra"] if lado > 0 else b["stop_venda"],
+                                     self.fator_parcial, self.rr)
+            return [], None, None
+        return self._gerenciar(b, op, self.fator_parcial), None, None
+
+
+ESTRATEGIAS: dict[str, Estrategia] = {"VALE3": Vale3(), "PETR4": Petr4()}
 
 
 # =============================================================================
