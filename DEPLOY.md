@@ -88,6 +88,11 @@ URL deste deploy: <https://zeroplayer12-opcoes-daytrade-app-2z3e1c.streamlit.app
   ao acordar, ou usar a versão local (`streamlit run app.py` ou `abrir-web.bat`)
   quando estiver no PC.
 
+- **Push no GitHub não acorda o app.** Testado em 14/09/2026: três pushes, um
+  deles de um job agendado criado para isso (que rodou com sucesso), e o app
+  continuou em "Zzzz". Dormindo, ele espera um visitante clicar no botão. O job
+  foi removido — sem esse efeito ele só deixaria um commit inútil por dia útil.
+
 ---
 
 ## 2. Túnel Cloudflare — link na hora, temporário
