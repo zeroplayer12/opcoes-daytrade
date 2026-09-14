@@ -790,7 +790,7 @@ def _rota_selenium(ativo: str, headless: bool = True, espera: int = 25) -> pd.Da
 
 @cache_dados(ttl=180, show_spinner=False)
 def extrair_automatico(ativo: str, usar_selenium: bool = True, headless: bool = True,
-                       du_limite: int = 40,
+                       du_limite: int = 50,
                        max_vencimentos: int = 8) -> tuple[pd.DataFrame, str, list[str], datetime]:
     """Rotas automáticas em cascata. Devolve (df, rota, log, coletado_em).
 
@@ -804,7 +804,12 @@ def extrair_automatico(ativo: str, usar_selenium: bool = True, headless: bool = 
     try:
         inicio = time.time()
         vencimentos = vencimentos_do_site(ativo)
-        alvos = [v for v in vencimentos if 0 < v["du"] <= du_limite][:max_vencimentos]
+        # Os mensais vêm primeiro: com 50 DU cabem o vencimento curto e o seguinte,
+        # e as semanais só completam o lote (servem a quem desliga o filtro de série).
+        dentro = [v for v in vencimentos if 0 < v["du"] <= du_limite]
+        mensais = [v for v in dentro if v["mensal"]][:3]
+        semanais = [v for v in dentro if not v["mensal"]][:max(0, max_vencimentos - len(mensais))]
+        alvos = sorted(mensais + semanais, key=lambda v: v["data"])
         if not alvos:
             alvos = vencimentos[:3]
         log.append(f"{len(vencimentos)} vencimentos no site; buscando {len(alvos)}")
@@ -1143,15 +1148,20 @@ def separar_calls_puts(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
 # =============================================================================
 # O que andou lá fora enquanto a B3 estava fechada. O investing.com proíbe
 # reproduzir os dados dele sem autorização por escrito, então a fonte é o
-# Yahoo Finance, que cobre os mesmos futuros e índices. Minério de ferro
-# (SGX/Dalian) não tem fonte gratuita aberta: BHP e Rio Tinto entram como
-# termômetro do setor.
+# Yahoo Finance, que cobre os mesmos futuros e índices. O Yahoo não tem
+# minério de ferro nem o Ibovespa futuro: o minério vem da API pública do SGX
+# e o mini-índice, do site de cotações da B3.
 
 YAHOO_SPARK = "https://query1.finance.yahoo.com/v7/finance/spark"
 _CABECALHOS_YAHOO = {"User-Agent": HEADERS["User-Agent"], "Accept": "application/json"}
 _LOTE_YAHOO = 20                               # limite de símbolos por chamada
 BRT = timezone(timedelta(hours=-3), "BRT")     # sem horário de verão desde 2019
 JANELAS_CORR = [20, 60, 120]                   # pregões usados na correlação
+SGX_FEF = "https://api.sgx.com/derivatives/v1.0/contract-code/FEF"
+SGX_HISTORICO = "https://api.sgx.com/derivatives/v1.0/history/symbol/{simbolo}"
+B3_DERIVATIVOS = "https://cotacao.b3.com.br/mds/api/v1/DerivativeQuotation/{ativo}"
+B3_OSCILACAO = "https://cotacao.b3.com.br/mds/api/v1/DailyFluctuationHistory/{simbolo}"
+SGT = timezone(timedelta(hours=8), "SGT")      # Singapura
 
 # (chave, título, descrição, [(símbolo no Yahoo, nome, detalhe)])
 GRUPOS_GLOBAIS: list[tuple[str, str, str, list[tuple[str, str, str]]]] = [
@@ -1159,9 +1169,10 @@ GRUPOS_GLOBAIS: list[tuple[str, str, str, list[tuple[str, str, str]]]] = [
         ("ES=F", "S&P 500", "futuro"), ("NQ=F", "Nasdaq 100", "futuro"),
         ("YM=F", "Dow Jones", "futuro"), ("RTY=F", "Russell 2000", "futuro"),
         ("^VIX", "VIX", "volatilidade do S&P")]),
-    ("brny", "Brasil em Nova York", "ADRs e ETF · valem o pré e o pós-mercado", [
-        ("EWZ", "EWZ", "ETF de Brasil"), ("PBR", "Petrobras", "ADR"), ("VALE", "Vale", "ADR"),
-        ("ITUB", "Itaú", "ADR"), ("BBD", "Bradesco", "ADR")]),
+    ("brny", "Brasil", "mini-índice na B3 · ADRs e ETF no pré e pós de Nova York", [
+        ("B3:WIN", "Ibovespa futuro", "mini-índice · B3"), ("EWZ", "EWZ", "ETF de Brasil"),
+        ("PBR", "Petrobras", "ADR"), ("VALE", "Vale", "ADR"), ("ITUB", "Itaú", "ADR"),
+        ("BBD", "Bradesco", "ADR")]),
     ("europa", "Europa", "pregão à vista, aberto antes da B3", [
         ("^STOXX50E", "Euro Stoxx 50", "zona do euro"), ("^GDAXI", "DAX", "Alemanha"),
         ("^FTSE", "FTSE 100", "Reino Unido"), ("^FCHI", "CAC 40", "França"),
@@ -1174,8 +1185,8 @@ GRUPOS_GLOBAIS: list[tuple[str, str, str, list[tuple[str, str, str]]]] = [
         ("BZ=F", "Petróleo Brent", "US$/barril"), ("CL=F", "Petróleo WTI", "US$/barril"),
         ("NG=F", "Gás natural", "US$/MMBtu"), ("RB=F", "Gasolina RBOB", "US$/galão"),
         ("HO=F", "Óleo de aquecimento", "US$/galão")]),
-    ("metais", "Metais e mineração", "COMEX · BHP e Rio Tinto no lugar do minério", [
-        ("GC=F", "Ouro", "US$/onça"), ("SI=F", "Prata", "US$/onça"), ("HG=F", "Cobre", "US$/libra"),
+    ("metais", "Metais e mineração", "COMEX e SGX · mineradoras de apoio", [
+        ("SGX:FEF", "Minério de ferro", "62% Fe · US$/t · SGX"), ("GC=F", "Ouro", "US$/onça"), ("SI=F", "Prata", "US$/onça"), ("HG=F", "Cobre", "US$/libra"),
         ("PL=F", "Platina", "US$/onça"), ("ALI=F", "Alumínio", "US$/tonelada"),
         ("BHP.AX", "BHP", "mineradora · Sydney"), ("RIO.L", "Rio Tinto", "mineradora · Londres")]),
     ("cambio", "Câmbio e juros", "moedas 24 h · Treasury em % a.a.", [
@@ -1186,13 +1197,13 @@ GRUPOS_GLOBAIS: list[tuple[str, str, str, list[tuple[str, str, str]]]] = [
         ("KC=F", "Café", "US¢/libra"), ("SB=F", "Açúcar", "US¢/libra"), ("CT=F", "Algodão", "US¢/libra"),
         ("LE=F", "Boi gordo", "US¢/libra")]),
 ]
-PULSO: list[str] = ["ES=F", "NQ=F", "BZ=F", "^HSI", "USDBRL=X", "EWZ"]
+PULSO: list[str] = ["B3:WIN", "ES=F", "NQ=F", "BZ=F", "SGX:FEF", "^HSI", "USDBRL=X", "EWZ"]
 # Colunas da matriz de correlação. ADRs ficam de fora: correlação perto de 1
 # com o próprio papel não ensina nada.
 MOTORES: list[tuple[str, str]] = [
     ("EWZ", "EWZ"), ("ES=F", "S&P 500"), ("^VIX", "VIX"), ("^HSI", "Hang Seng"), ("BZ=F", "Brent"),
-    ("HG=F", "Cobre"), ("RIO.L", "Rio Tinto"), ("GC=F", "Ouro"), ("USDBRL=X", "Dólar"),
-    ("DX-Y.NYB", "DXY"), ("^TNX", "Treasury"),
+    ("SGX:FEF", "Minério"), ("HG=F", "Cobre"), ("RIO.L", "Rio Tinto"), ("GC=F", "Ouro"),
+    ("USDBRL=X", "Dólar"), ("DX-Y.NYB", "DXY"), ("^TNX", "Treasury"),
 ]
 B3_YAHOO: dict[str, str] = {ativo: f"{ativo}.SA" for ativo in ATIVOS}
 NOMES: dict[str, tuple[str, str]] = {s: (nome, det) for *_, itens in GRUPOS_GLOBAIS for s, nome, det in itens}
@@ -1268,16 +1279,164 @@ def ler_cotacao(resp: dict, agora: float) -> dict | None:
             "pontos": pontos, "casas": int(meta.get("priceHint") or 2)}
 
 
+def _contrato_minerio() -> dict | None:
+    """Registro do SGX do contrato de minério mais negociado entre os três primeiros vencimentos.
+
+    O primeiro vencimento é o mês corrente (média do índice no mês) e costuma
+    negociar menos que o seguinte, que é a referência do mercado.
+    """
+    dados = _get_json(SGX_FEF, {"order": "asc", "orderby": "delivery-month", "category": "futures",
+                                "session": "-1", "t": int(time.time() * 1000), "showTAndTPlusOne": "false"},
+                      _CABECALHOS_YAHOO, 20).get("data") or []
+    com_preco = [d for d in dados if d.get("it") == "mffc" and d.get("last-traded-price-adj") is not None
+                 and re.fullmatch(r"FEF[FGHJKMNQUVXZ]\d\d", str(d.get("symbol")))]
+    if not com_preco:
+        return None
+    meses = sorted({d["symbol"]: str(d.get("delivery-month")) for d in com_preco}.items(), key=lambda kv: kv[1])
+    volume = {sym: sum(float(d.get("volume-trade") or 0) for d in com_preco if d["symbol"] == sym)
+              for sym, _ in meses[:3]}
+    escolhido = max(volume, key=volume.get)
+    return max((d for d in com_preco if d["symbol"] == escolhido),
+               key=lambda d: str(d.get("record-update-time") or ""))
+
+
+def cotacao_minerio() -> dict | None:
+    """Minério de ferro 62% Fe (SGX IODEX), em US$/t, no contrato mais negociado."""
+    d = _contrato_minerio()
+    if not d:
+        return None
+    ultimo = float(d["last-traded-price-adj"])
+    variacao = d.get("change-adj")
+    ref = ultimo - float(variacao) if variacao is not None else None
+    try:
+        hora = int(datetime.strptime(str(d.get("last-update-time"))[:19], "%Y-%m-%d %H:%M:%S")
+                   .replace(tzinfo=SGT).timestamp())
+    except ValueError:
+        hora = int(float(d.get("updated-time") or 0) / 1000)
+    return {"ultimo": ultimo, "ref": ref, "var": ultimo - ref if ref else None,
+            "var_pct": (ultimo / ref - 1) * 100 if ref else None, "hora": hora, "fase": "regular",
+            "pontos": [], "casas": 2, "contrato": d["symbol"]}
+
+
+def historico_minerio() -> pd.Series:
+    """Ajustes diários do contrato de minério mais negociado, pela data do pregão em Singapura."""
+    d = _contrato_minerio()
+    if not d:
+        return pd.Series(dtype=float)
+    dados = _get_json(SGX_HISTORICO.format(simbolo=d["symbol"]),
+                      {"days": "1y", "category": "futures",
+                       "params": "record-date,base-date,daily-settlement-price-abs"},
+                      _CABECALHOS_YAHOO, 20).get("data") or []
+    serie = {}
+    for r in dados:
+        try:
+            # record-date é o dia do pregão; base-date já aponta para o dia seguinte
+            dia = (datetime.strptime(r["record-date"], "%Y-%m-%d") if r.get("record-date")
+                   else datetime.strptime(str(r["base-date"]), "%Y%m%d")).date()
+            serie[dia] = float(r["daily-settlement-price-abs"])
+        except (KeyError, TypeError, ValueError):
+            continue
+    return pd.Series(serie, dtype=float).sort_index()
+
+
+def _curva_b3(simbolo: str, dia: date) -> list[tuple[int, float]]:
+    """Minuto a minuto do pregão do mini-índice, com o mesmo atraso da cotação."""
+    try:
+        dados = _get_json(B3_OSCILACAO.format(simbolo=simbolo), {}, _CABECALHOS_YAHOO, 15)
+    except Exception:
+        return []
+    pontos = []
+    for q in (((dados.get("TradgFlr") or {}).get("scty") or {}).get("lstQtn")) or []:
+        try:
+            quando = datetime.combine(dia, datetime.strptime(str(q["dtTm"]), "%H:%M:%S").time(), tzinfo=BRT)
+            pontos.append((int(quando.timestamp()), float(q["closPric"])))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return pontos
+
+
+def cotacao_ibov_futuro() -> dict | None:
+    """Mini-índice (WIN) do vencimento vigente, pelo site de cotações da B3 (15 min de atraso).
+
+    Antes do primeiro negócio a B3 publica o preço teórico do leilão de abertura
+    (compra igual à venda); sem ele, fica o ajuste anterior, marcado como tal.
+    """
+    dados = _get_json(B3_DERIVATIVOS.format(ativo="WIN"), {}, _CABECALHOS_YAHOO, 20)
+    try:
+        consulta = datetime.strptime(str((dados.get("Msg") or {}).get("dtTm")),
+                                     "%Y-%m-%d %H:%M:%S").replace(tzinfo=BRT)
+    except ValueError:
+        consulta = datetime.now(BRT)
+
+    def vencimento(c: dict) -> str:
+        return str(((c.get("asset") or {}).get("AsstSummry") or {}).get("mtrtyCode") or "")
+
+    vigentes = sorted((c for c in dados.get("Scty") or [] if vencimento(c) >= f"{consulta:%Y-%m-%d}"),
+                      key=vencimento)
+    if not vigentes:
+        return None
+    contrato = vigentes[0]
+    q = contrato.get("SctyQtn") or {}
+    ref = q.get("prvsDayAdjstmntPric")
+    ultimo, fase = q.get("curPrc"), "regular"
+    if ultimo is None:
+        compra = (contrato.get("buyOffer") or {}).get("price")
+        venda = (contrato.get("sellOffer") or {}).get("price")
+        ultimo, fase = (compra, "leilão") if compra and compra == venda else (ref, "ajuste")
+    if ultimo is None:
+        return None
+    pontos = _curva_b3(contrato["symb"], consulta.date()) if fase == "regular" else []
+    if fase == "ajuste":
+        hora = 0
+    elif pontos:
+        hora = pontos[-1][0]
+    else:
+        hora = int((consulta - timedelta(minutes=15)).timestamp())
+    ultimo = float(ultimo)
+    ref = float(ref) if ref else None
+    return {"ultimo": ultimo, "ref": ref, "var": ultimo - ref if ref else None,
+            "var_pct": (ultimo / ref - 1) * 100 if ref else None, "hora": hora, "fase": fase,
+            "pontos": pontos, "casas_fixas": 0, "contrato": contrato["symb"]}
+
+
+# Mercados fora do Yahoo: símbolo interno -> função que devolve a cotação
+_FONTES_EXTRAS = {"B3:WIN": cotacao_ibov_futuro, "SGX:FEF": cotacao_minerio}
+
+
 @cache_dados(ttl=60, show_spinner=False)
 def cotacoes_globais(simbolos: tuple[str, ...]) -> tuple[dict[str, dict], datetime, list[str]]:
-    """Cotação de cada símbolo, com a curva do dia em barras de 5 min (cache de 1 min)."""
-    respostas, falhas = _spark(list(simbolos), "1d", "5m")
+    """Cotação de cada símbolo, com a curva do dia (cache de 1 min).
+
+    Yahoo, SGX e B3 são consultados ao mesmo tempo; uma fonte fora do ar só deixa
+    em branco os mercados dela.
+    """
+    yahoo = [s for s in simbolos if s not in _FONTES_EXTRAS]
+    extras = [s for s in simbolos if s in _FONTES_EXTRAS]
+
+    def extra(s: str) -> tuple[str, dict | None, str | None]:
+        try:
+            return s, _FONTES_EXTRAS[s](), None
+        except Exception as exc:
+            return s, None, f"{s}: {exc}"
+
+    if NO_NAVEGADOR:
+        (respostas, falhas), outros = _spark(yahoo, "1d", "5m"), [extra(s) for s in extras]
+    else:
+        with ThreadPoolExecutor(max_workers=1 + max(1, len(extras))) as pool:
+            pedido = pool.submit(_spark, yahoo, "1d", "5m")
+            outros = list(pool.map(extra, extras))
+            respostas, falhas = pedido.result()
     agora = time.time()
     cot = {}
-    for s in simbolos:
+    for s in yahoo:
         c = ler_cotacao(respostas[s], agora) if s in respostas else None
         if c:
             cot[s] = c
+    for s, c, falha in outros:
+        if c:
+            cot[s] = c
+        if falha:
+            falhas.append(falha)
     if not cot:
         raise FalhaExtracao("; ".join(falhas) or "o Yahoo Finance não devolveu cotações")
     return cot, datetime.now(BRT), falhas
@@ -1290,8 +1449,15 @@ def historico_diario(simbolos: tuple[str, ...]) -> pd.DataFrame:
     A data local importa: a barra diária de um futuro de Nova York e a do Hang
     Seng têm carimbos UTC diferentes, mas pertencem ao mesmo dia.
     """
-    respostas, falhas = _spark(list(simbolos), "1y", "1d")
+    respostas, falhas = _spark([s for s in simbolos if s not in _FONTES_EXTRAS], "1y", "1d")
     series = {}
+    if "SGX:FEF" in simbolos:
+        try:
+            minerio = historico_minerio()
+            if not minerio.empty:
+                series["SGX:FEF"] = minerio
+        except Exception as exc:
+            falhas.append(f"minério: {exc}")
     for s, resp in respostas.items():
         meta = resp.get("meta") or {}
         ts = pd.to_datetime(pd.Series(resp.get("timestamp") or [], dtype="int64"), unit="s", utc=True)
@@ -1617,8 +1783,8 @@ section[data-testid="stSidebar"] .sb.first{border-top:none;padding-top:0;margin-
 /* aba Correlações */
 .stline{display:flex;align-items:center;gap:7px;min-height:40px;font:400 12.5px/1.3 var(--sans);color:var(--t3);}
 .stline b{color:var(--t1);font-weight:500;}
-.pulse{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;margin:6px 0 14px;}
-@container (max-width:1300px){ .pulse{grid-template-columns:repeat(3,minmax(0,1fr));} }
+.pulse{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:10px;margin:6px 0 14px;}
+@container (max-width:1600px){ .pulse{grid-template-columns:repeat(4,minmax(0,1fr));} }
 @container (max-width:560px){
   .pulse{grid-template-columns:repeat(2,minmax(0,1fr));}
   .pz .l .sub{display:none;}
@@ -1635,6 +1801,8 @@ section[data-testid="stSidebar"] .sb.first{border-top:none;padding-top:0;margin-
 .spk polyline.up{stroke:var(--up);} .spk polyline.down{stroke:var(--down);} .spk polyline.flat{stroke:var(--t3);}
 .spk line{stroke:var(--t3);stroke-width:1;stroke-dasharray:2 3;opacity:.7;vector-effect:non-scaling-stroke;}
 .spk-na{color:var(--t3);}
+.spk-vazio{height:34px;margin-top:10px;display:flex;align-items:flex-end;font:400 11px/1.3 var(--sans);
+  color:var(--t3);}
 .fase{display:inline-block;font:600 9.5px/1 var(--sans);letter-spacing:.07em;text-transform:uppercase;
   padding:3px 5px;border-radius:4px;border:1px solid var(--ln2);color:var(--t2);margin-right:6px;vertical-align:1px;}
 .sec{display:flex;justify-content:space-between;align-items:baseline;gap:6px 16px;flex-wrap:wrap;margin:24px 2px 10px;}
@@ -2063,7 +2231,9 @@ _ICONE_GRUPO = {"eua": "ativo", "brny": "predio", "europa": "globo", "asia": "gl
 
 
 def _casas(c: dict) -> int:
-    """Casas decimais do Yahoo (priceHint), entre 2 e 4."""
+    """Casas decimais: fixas quando a fonte pede (índice em pontos), senão o priceHint do Yahoo, de 2 a 4."""
+    if c.get("casas_fixas") is not None:
+        return int(c["casas_fixas"])
     return min(4, max(2, int(c.get("casas") or 2)))
 
 
@@ -2125,12 +2295,13 @@ def _pulso(cot: dict, agora: datetime) -> str:
             continue
         casas = _casas(c)
         hora, _ = _hora_cotacao(c["hora"], agora)
+        curva = (_sparkline(c["pontos"], c["ref"]) if len(c["pontos"]) > 1
+                 else '<div class="spk-vazio">sem curva da sessão</div>')
         fase = f'<span class="fase">{c["fase"]}</span>' if c["fase"] != "regular" else ""
         tiles.append(
             f'<div class="kpi pz">{rotulo}<div class="v">{_num(c["ultimo"], casas)}</div>'
             f'<div class="d">{_variacao(c["var_pct"])}<span class="q">{fase}'
-            f'{_num(c["var"], casas, sinal=True)} · {hora}</span></div>'
-            f'{_sparkline(c["pontos"], c["ref"])}</div>')
+            f'{_num(c["var"], casas, sinal=True)} · {hora}</span></div>{curva}</div>')
     return f'<div class="pulse">{"".join(tiles)}</div>'
 
 
@@ -2139,9 +2310,10 @@ def _quadro_grupo(chave: str, titulo: str, desc: str, itens: list, cot: dict,
     """Tabela de um grupo de mercados: último, variação, curva da sessão e hora."""
     linhas = []
     for s, nome, det in itens:
-        rotulo = (f'<td class="nm"><b>{_esc(nome)}</b><small>{_esc(det)} · '
-                  f'<span class="mono">{_esc(s)}</span></small></td>')
         c = cot.get(s)
+        codigo = (c or {}).get("contrato") or s
+        rotulo = (f'<td class="nm"><b>{_esc(nome)}</b><small>{_esc(det)} · '
+                  f'<span class="mono">{_esc(codigo)}</span></small></td>')
         if not c:
             linhas.append(f'<tr>{rotulo}<td colspan="4" class="mut">sem cotação agora</td></tr>')
             continue
@@ -2199,8 +2371,9 @@ def _mapa_correlacao(corr: pd.DataFrame, nobs: pd.DataFrame, cot: dict, janela: 
     legenda = ('<div class="hm-leg"><span>−1 · move ao contrário</span><span class="grad"></span>'
                "<span>+1 · move junto</span></div>")
     nota = (f'<div class="note">{_ic("info")}<span>Correlação de Pearson entre os retornos diários de cada '
-            "ativo e de cada mercado. A Ásia fecha antes da B3 abrir, então ali o número mede o quanto o "
-            "pregão asiático antecipa o nosso. Correlação passada não garante o movimento de hoje.</span></div>")
+            "ativo e de cada mercado. A Ásia e o pregão diurno do minério em Singapura fecham antes da B3 "
+            "abrir, então ali o número mede o quanto o movimento de lá antecipa o nosso. Correlação passada "
+            "não garante o movimento de hoje.</span></div>")
     return (f'<div class="card">{cab}<div class="hm-wrap"><table class="hm"><thead><tr><th></th>{th}'
             f'<th class="lt">Mais correlacionados · agora</th></tr></thead>'
             f'<tbody>{"".join(linhas)}</tbody></table></div>{legenda}{nota}</div>')
@@ -2240,7 +2413,7 @@ _ESTADO_PADRAO: dict[str, object] = {
     "fonte_sel": "Site", "ativo_sel": "PETR4", "somente_padrao": True,
     "du_janela": (DU_MIN_PADRAO, DU_MAX_PADRAO), "todos_venc": False,
     "delta_faixa": (DELTA_MIN_PADRAO, DELTA_MAX_PADRAO), "min_neg": 0, "exigir_neg": True,
-    "max_atraso": 1, "taxa_pct": 10.75, "spot_manual": 0.0, "usar_selenium": False,
+    "max_atraso": 1, "incluir_seguinte": True, "taxa_pct": 10.75, "spot_manual": 0.0, "usar_selenium": False,
     "headless": True, "janela_corr": 60, "auto_corr": True,
 }
 
@@ -2295,6 +2468,10 @@ def pagina_opcoes(cabecalho, hoje: date) -> None:
             help="Aceita só RAIZ+LETRA+DÍGITOS (PETRI494) e descarta semanais e séries atípicas "
                  "(PETRI483W4), antes da ordenação por liquidez.")
         du_min, du_max = st.slider("Dias úteis até o vencimento", 0, 60, key="du_janela")
+        incluir_seguinte = st.toggle(
+            "Incluir o vencimento seguinte", key="incluir_seguinte",
+            help="Mostra também o mensal logo depois da janela de dias úteis, para comparar o "
+                 "vencimento curto com o próximo. O mais curto continua sendo o padrão.")
         todos = st.toggle("Mostrar vencimentos fora da janela", key="todos_venc")
         delta_min, delta_max = st.slider("Faixa de |Delta|", 0.05, 0.95, step=0.05, key="delta_faixa")
         _sb("Liquidez")
@@ -2360,7 +2537,15 @@ def pagina_opcoes(cabecalho, hoje: date) -> None:
     vencimentos = sorted({v for v in df["vencimento"].dropna().unique()}) or calendario_vencimentos(hoje)
     candidatos = [v for v in vencimentos if eh_vencimento_mensal(v)] if somente_padrao else vencimentos
     no_ciclo = [v for v in candidatos if du_min <= dias_uteis(hoje, v) <= du_max]
-    elegiveis_v = no_ciclo or ((candidatos or vencimentos) if todos else [])
+    # O vencimento seguinte ao último da janela (ou o primeiro acima do piso, se a
+    # janela estiver vazia), para comparar o curto com o próximo.
+    limite = no_ciclo[-1] if no_ciclo else None
+    seguinte = next((v for v in candidatos if dias_uteis(hoje, v) >= du_min
+                     and (limite is None or v > limite)), None) if incluir_seguinte else None
+    if todos:
+        elegiveis_v = candidatos or vencimentos
+    else:
+        elegiveis_v = no_ciclo + ([seguinte] if seguinte else [])
     with c_venc:
         if elegiveis_v:
             chave_venc = f"venc_{fonte}_{ativo}"
@@ -2452,8 +2637,8 @@ def pagina_correlacoes(cabecalho) -> None:
         _sb("Sobre os dados")
         st.caption("Cotações do Yahoo Finance, em horário de Brasília. O atraso varia por bolsa (nos "
                    "futuros dos EUA, até cerca de 10 min); a coluna Hora mostra a do último preço.")
-        st.caption("Minério de ferro (SGX e Dalian) não tem fonte gratuita aberta. BHP e Rio Tinto "
-                   "entram como termômetro do setor.")
+        st.caption("Minério de ferro: SGX, 62% Fe em US$/t, no contrato mais negociado. Ibovespa "
+                   "futuro: mini-índice do vencimento vigente, pelo site da B3 (15 min de atraso).")
     ritmo = "Atualiza a cada <b>1 min</b>" if auto else "Atualização <b>manual</b>"
     _html(_moldura("O que os mercados lá fora fizeram enquanto a B3 estava fechada",
                    f'<span class="pill">{_ic("fonte")}<b>Yahoo Finance</b></span>'

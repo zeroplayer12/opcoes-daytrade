@@ -64,7 +64,7 @@ após 12h sem visita.
 | # | Filtro | Regra |
 |---|--------|-------|
 | 1 | **Nomenclatura** | Só a série mensal convencional da B3. Aplicado **antes** de tudo, para o topo do ranking de liquidez ser sempre um contrato padrão. |
-| 2 | **Vencimento** | **2 a 20 dias úteis**, apenas 3ª sexta. Seletor mostra `data · N DU`, com feriados da B3 calculados (Carnaval, Sexta Santa e Corpus Christi via algoritmo da Páscoa). |
+| 2 | **Vencimento** | **2 a 20 dias úteis**, apenas 3ª sexta, **mais o mensal seguinte** para comparar o curto com o próximo (desligável em *Incluir o vencimento seguinte*; o padrão continua sendo o mais curto). Seletor mostra `data · N DU`, com feriados da B3 calculados (Carnaval, Sexta Santa e Corpus Christi via algoritmo da Páscoa). |
 | 3 | **Frescor** | Descarta o que não negocia há mais de N pregões. Necessário porque o Delta é calculado do preço — veja abaixo. |
 | 4 | **Delta** | `\|Δ\|` entre **0,50 e 0,70** — Calls de +0,50 a +0,70, Puts de -0,50 a -0,70. |
 | 5 | **Liquidez** | Ordena por **Volume Financeiro ↓** e **Núm. de Negócios ↓**. **O topo da lista é a opção escolhida.** |
@@ -181,9 +181,9 @@ Para a checagem de antes da abertura: como foram a madrugada e a manhã lá fora
 
 | Bloco | O que mostra |
 |---|---|
-| **Pulso** | S&P 500 e Nasdaq futuros, Brent, Hang Seng, Dólar/Real e EWZ: último, variação e a curva da sessão |
-| **Correlação com seus ativos** | matriz dos 6 ativos × 11 mercados (EWZ, S&P 500, VIX, Hang Seng, Brent, Cobre, Rio Tinto, Ouro, Dólar, DXY, Treasury 10 anos), janela de 20, 60 ou 120 pregões; na última coluna, os dois mercados mais correlacionados com cada ativo e quanto andam agora |
-| **Cotações por mercado** | 45 mercados em 8 quadros — EUA, Brasil em NY (ADRs e EWZ), Europa, Ásia, Energia, Metais, Câmbio e juros, Agrícolas |
+| **Pulso** | Ibovespa futuro, S&P 500 e Nasdaq futuros, Brent, minério de ferro, Hang Seng, Dólar/Real e EWZ: último, variação e a curva da sessão |
+| **Correlação com seus ativos** | matriz dos 6 ativos × 12 mercados (EWZ, S&P 500, VIX, Hang Seng, Brent, Minério, Cobre, Rio Tinto, Ouro, Dólar, DXY, Treasury 10 anos), janela de 20, 60 ou 120 pregões; na última coluna, os dois mercados mais correlacionados com cada ativo e quanto andam agora |
+| **Cotações por mercado** | 47 mercados em 8 quadros — EUA, Brasil (Ibovespa futuro, ADRs e EWZ), Europa, Ásia, Energia, Metais e mineração, Câmbio e juros, Agrícolas |
 
 A aba se atualiza sozinha a cada minuto (desligável na barra lateral) e só roda quando
 está aberta: quem fica na aba Opções não espera pelas cotações globais.
@@ -191,15 +191,21 @@ está aberta: quem fica na aba Opções não espera pelas cotações globais.
 ### De onde vêm os dados
 
 - **Yahoo Finance**, pelo endpoint `v7/finance/spark` (não oficial): até 20 símbolos por
-  chamada, três chamadas em paralelo, ~1 s para os 45 mercados. Cache de 1 min para as
-  cotações e de 1 h para o histórico diário.
+  chamada, três chamadas em paralelo. Cache de 1 min para as cotações e de 1 h para o
+  histórico diário. As três fontes são consultadas ao mesmo tempo (~2,5 s no total), e uma
+  fora do ar só deixa em branco os mercados dela.
 - **Por que não o investing.com:** o rodapé do site proíbe usar, armazenar ou reproduzir
   os dados dele sem autorização por escrito. Os mesmos futuros e índices existem no
   Yahoo, com o mesmo contrato de referência.
-- **Minério de ferro não tem fonte gratuita aberta.** O `TIO=F` do Yahoo está parado
-  desde agosto, e as cotações de SGX e Dalian dos portais chineses exigem se passar pelo
-  próprio portal. No lugar, BHP (Sydney) e Rio Tinto (Londres) servem de termômetro do
-  setor para VALE3.
+- **Minério de ferro:** API pública do SGX (IODEX 62% Fe, US$/t), no contrato mais
+  negociado entre os três primeiros vencimentos — o mês corrente costuma negociar menos
+  que o seguinte. O SGX não publica curva intradiária, então o bloco mostra só preço e
+  variação; a correlação usa os ajustes diários pela data do pregão (`record-date`). O
+  `TIO=F` do Yahoo está parado desde agosto e não serve.
+- **Ibovespa futuro:** mini-índice (WIN) do vencimento vigente, pelo site de cotações da
+  B3, com 15 min de atraso. Antes do primeiro negócio aparece o preço teórico do leilão
+  de abertura (etiqueta `LEILÃO`); sem ele, o ajuste anterior (`AJUSTE`). A variação é
+  sempre contra o ajuste do dia anterior.
 - **ADRs e EWZ fora do pregão:** no pré e no pós-mercado de Nova York, o preço é o do
   último negócio estendido e a variação é contra o fechamento regular (etiqueta `PRÉ`).
 - **Atraso:** varia por bolsa (nos futuros dos EUA, até ~10 min). A coluna *Hora* mostra
