@@ -1,0 +1,33 @@
+name: manter-app-acordado
+
+# O Streamlit Community Cloud põe o app para dormir depois de um tempo sem acesso
+# (observado: menos de 48h), e por ser privado nenhum ping externo o acorda — a
+# borda responde 303 -> login antes do contêiner. Um push no main faz o
+# Streamlit puxar o repositório e subir o app; este job faz um commit mínimo em
+# dia útil, antes do pregão.
+
+on:
+  schedule:
+    - cron: "30 11 * * 1-5"   # 08:30 em Brasília (UTC-3, sem horário de verão), seg a sex
+  workflow_dispatch: {}        # disparo manual pela aba Actions do GitHub
+  push:                        # roda uma vez quando este arquivo muda: autoteste ao instalar
+    branches: [main]
+    paths: [".github/workflows/manter-acordado.yml"]
+
+permissions:
+  contents: write
+
+jobs:
+  acordar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Registrar o horário e enviar
+        run: |
+          date -u +%Y-%m-%dT%H:%M:%SZ > .keepalive
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .keepalive
+          git commit -m "keepalive: acordar o app antes do pregão"
+          git pull --rebase
+          git push
