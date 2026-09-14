@@ -280,9 +280,10 @@ gráfico de candles do pregão com as linhas da operação. Abre direto em
 
 - **As estratégias são traduzidas** do código do Profit para `operacoes.py` (hoje: VALE3,
   10 min). A simulação segue o backtest do Profit: o código roda no fechamento do candle,
-  a entrada é na abertura do candle seguinte, ordens de saída valem só para o próximo
-  candle e a posição é zerada no último candle do pregão. Quando um candle toca stop e
-  alvo, o motor assume o stop.
+  a entrada é na abertura do candle seguinte e ordens de saída valem só para o próximo
+  candle. A posição **não é zerada às 17h**: segue de um pregão para o outro até o alvo
+  ou o stop, como nas estratégias do Profit — por isso a simulação parte de 60 dias de
+  histórico. Quando um candle toca stop e alvo, o motor assume o stop.
 - **Conferência obrigatória:** a tradução só vale depois de bater, operação por operação,
   com a lista de operações do backtest do Profit no mesmo período.
 - **Dados:** por enquanto, barras de 5 min do Yahoo (cerca de 15 min de atraso),

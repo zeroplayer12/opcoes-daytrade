@@ -11,7 +11,9 @@ A simulação segue a semântica do backtest do Profit:
 - ordens de saída (limite e stop) enviadas num fechamento valem só para o
   candle seguinte; ordem não reenviada é cancelada. Por isso, no candle em que
   a entrada é executada ainda não há stop — igual ao Profit;
-- as variáveis guardam o valor de um candle para o outro.
+- as variáveis guardam o valor de um candle para o outro;
+- a posição segue de um pregão para o outro até o alvo ou o stop: as
+  estratégias não zeram no fim do dia.
 
 Quando um candle toca stop e alvo ao mesmo tempo não dá para saber o que veio
 primeiro; o motor assume o stop (conservador), a menos que a abertura já tenha
@@ -162,6 +164,7 @@ class Estrategia:
     minutos = 10
     lote = 100
     ultimo_candle = "16:50"   # abertura do último candle do pregão (horário de verão dos EUA)
+    zera_no_fim_do_dia = False  # as estratégias dele carregam a posição de um dia para o outro
 
     def indicadores(self, df: pd.DataFrame) -> pd.DataFrame:
         raise NotImplementedError
@@ -248,15 +251,17 @@ class Resultado:
     pendentes: list[Ordem]                # ordens enviadas no último fechamento
 
 
-def simular(est: Estrategia, df: pd.DataFrame, zerar_no_fim_do_dia: bool = True,
+def simular(est: Estrategia, df: pd.DataFrame, zerar_no_fim_do_dia: bool | None = None,
             candle_em_formacao: pd.Series | None = None) -> Resultado:
     """Roda a estratégia sobre candles fechados.
 
     `candle_em_formacao` (o, h, l, c até agora) só executa as ordens pendentes —
     o código da estratégia não roda nele, porque ele ainda não fechou.
-    Com `zerar_no_fim_do_dia`, a posição é zerada no fechamento do último candle
-    de cada pregão e não se abre entrada nesse candle (day trade).
+    Com `zerar_no_fim_do_dia` (padrão: o da estratégia, desligado), a posição é
+    zerada no fechamento do último candle de cada pregão e não se abre entrada
+    nesse candle (day trade).
     """
+    zerar = est.zera_no_fim_do_dia if zerar_no_fim_do_dia is None else zerar_no_fim_do_dia
     x = est.indicadores(df)
     dados = df.join(x)
     dados["cor"] = None
@@ -298,7 +303,7 @@ def simular(est: Estrategia, df: pd.DataFrame, zerar_no_fim_do_dia: bool = True,
         executa(pendentes, hora, b["open"], b["high"], b["low"])
         pendentes = []
         # 2) o código da estratégia roda no fechamento
-        fim_do_dia = zerar_no_fim_do_dia and bool(ultimo_do_dia.iloc[i])
+        fim_do_dia = zerar and bool(ultimo_do_dia.iloc[i])
         if fim_do_dia and op is not None:
             op.execucoes.append(Execucao(hora, b["close"], -op.qtd, "zeragem"))
             op = None

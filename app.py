@@ -3126,10 +3126,27 @@ def _painel_mercados() -> None:
 
 # ---------------- Aba Operações ---------------------------------------------
 
+@cache_dados(ttl=3600, show_spinner=False)
+def _barras_historico(ativo: str) -> pd.DataFrame:
+    """60 dias de barras de 5 min (o máximo do Yahoo), renovados de hora em hora."""
+    return ope.barras_5min(ativo, "60d")
+
+
 @cache_dados(ttl=30, show_spinner=False)
+def _barras_recentes(ativo: str) -> pd.DataFrame:
+    return ope.barras_5min(ativo, "1d")
+
+
 def barras_estrategia(ativo: str) -> pd.DataFrame:
-    """Barras de 5 min dos últimos 5 pregões (cache de 30 s)."""
-    return ope.barras_5min(ativo, "5d")
+    """Histórico longo mais o pregão de agora. As estratégias carregam posição de um
+    dia para o outro, então a simulação precisa começar bem antes da operação aberta."""
+    barras = pd.concat([_barras_historico(ativo), _barras_recentes(ativo)])
+    return barras[~barras.index.duplicated(keep="last")].sort_index()
+
+
+def _quando(t, dia) -> str:
+    """'10:40' se foi no pregão mostrado, '11/09 10:40' se veio de um pregão anterior."""
+    return f"{t:%H:%M}" if t.date() == dia else f"{t:%d/%m %H:%M}"
 
 
 def _reais(v: float) -> str:
@@ -3193,7 +3210,7 @@ def _cartao_operacao(ativo: str, est, res, formando, erro: str | None) -> str:
              f'<div class="m" style="left:100%"><span>alvo</span></div>'
              f'<div class="ag {tom}" style="left:{pos(preco):.1f}%" title="preço atual {_moeda(preco)}"></div></div>')
     falta = abs(op.alvo2 - preco) / preco * 100
-    parcial_txt = (f'<em class="ok">executada às {parcial.hora:%H:%M}</em>' if parcial
+    parcial_txt = (f'<em class="ok">executada {_quando(parcial.hora, dia)}</em>' if parcial
                    else "<em>pendente</em>")
     stop_txt = "no zero a zero" if op.stop_movido else f"risco de {_num(abs(op.stop - ent.preco) / ent.preco * 100, 2)}%"
     return (f'<div class="card opc"><div class="opc-h">{cab}<span class="sts {classe}">{icone}{lado_txt}</span></div>'
@@ -3201,7 +3218,7 @@ def _cartao_operacao(ativo: str, est, res, formando, erro: str | None) -> str:
             f'<div class="d">{_num(pct, 2, sufixo="%", sinal=True)} sobre a entrada · {_num(abs(op.qtd), 0)} de '
             f"{est.lote} ações abertas</div></div>{regua}"
             f'<div class="opc-g">'
-            f'<div><span>Entrada</span><b>{_moeda(ent.preco)}</b><em>{ent.hora:%H:%M} · sinal {op.hora_sinal:%H:%M}</em></div>'
+            f'<div><span>Entrada</span><b>{_moeda(ent.preco)}</b><em>{_quando(ent.hora, dia)} · sinal {_quando(op.hora_sinal, dia)}</em></div>'
             f'<div><span>Preço atual</span><b>{_moeda(preco)}</b><em>candle das {ultimo.name:%H:%M}</em></div>'
             f'<div><span>Parcial (1R)</span><b>{_moeda(op.alvo1)}</b>{parcial_txt}</div>'
             f'<div><span>Alvo final</span><b>{_moeda(op.alvo2)}</b><em>faltam {_num(falta, 2)}%</em></div>'
@@ -3229,7 +3246,13 @@ def _grafico_operacao(res, formando):
     if formando is not None:
         d = pd.concat([d, formando.to_frame().T])
     dia = d.index[-1].date()
-    d = d[[t.date() == dia for t in d.index]].copy()
+    # com posição aberta vinda de pregões anteriores, o gráfico começa no dia do sinal (até 5 pregões)
+    datas = sorted({t.date() for t in d.index})
+    primeiro = dia
+    if res.aberta is not None:
+        primeiro = max(res.aberta.hora_sinal.date(), datas[max(0, len(datas) - 5)])
+    d = d[[t.date() >= primeiro for t in d.index]].copy()
+    varios_dias = primeiro != dia
     for col in ("open", "high", "low", "close"):
         d[col] = d[col].astype(float)
     fig = go.Figure()
@@ -3269,7 +3292,7 @@ def _grafico_operacao(res, formando):
                                xanchor="left", font=dict(size=11, color=cor_l), bgcolor="rgba(11,15,26,.75)")
     for o in res.operacoes:
         for e in o.execucoes:
-            if e.hora.date() != dia:
+            if e.hora.date() < primeiro:
                 continue
             compra = e.qtd > 0
             fig.add_trace(go.Scatter(
@@ -3282,7 +3305,9 @@ def _grafico_operacao(res, formando):
         height=470, margin=dict(l=8, r=150, t=34, b=24), separators=",.",
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         font=dict(family="Inter, system-ui, sans-serif", size=12, color="#A9B4C8"),
-        xaxis=dict(rangeslider=dict(visible=False), showgrid=False, tickformat="%H:%M",
+        xaxis=dict(rangeslider=dict(visible=False), showgrid=False,
+                   tickformat="%d/%m %H:%M" if varios_dias else "%H:%M",
+                   rangebreaks=[dict(bounds=["sat", "mon"]), dict(bounds=[17.5, 10], pattern="hour")],
                    linecolor="rgba(255,255,255,.12)", range=[d.index[0], fim + pd.Timedelta(minutes=30)]),
         yaxis=dict(side="right", gridcolor="rgba(255,255,255,.06)", zeroline=False, tickformat=".2f"),
         legend=dict(orientation="h", yanchor="bottom", y=1.01, x=0, font=dict(size=11)),
@@ -3296,8 +3321,9 @@ def pagina_operacoes(cabecalho) -> None:
         _sb("Operações", primeiro=True)
         auto = st.toggle("Atualizar sozinho a cada 30 s", key="auto_ops")
         _sb("Sobre os dados")
-        st.caption("As estratégias são traduções do código do Profit. Sinal no fechamento do candle, entrada "
-                   "na abertura do seguinte e posição zerada no fim do pregão, como no backtest do Profit.")
+        st.caption("As estratégias são traduções do código do Profit. Sinal no fechamento do candle e entrada "
+                   "na abertura do seguinte, como no backtest do Profit; a posição segue de um pregão para o "
+                   "outro até o alvo ou o stop.")
         st.caption("Por enquanto os candles vêm do Yahoo Finance, com cerca de 15 min de atraso. Assim que a "
                    "exportação RTD do Profit estiver ligada, passam a vir dele, em tempo real.")
     _html(_moldura("Suas estratégias do Profit: posição, alvo, parcial, stop e resultado",
