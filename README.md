@@ -29,6 +29,28 @@ tolerante, e as rotas que dependem deles simplesmente não entram na cascata.
 Primeiro teste sem depender do site: marque **Demo** na barra lateral. Ele gera uma
 grade sintética por Black-Scholes e exercita todos os filtros e a UI.
 
+## Sempre ligado no PC
+
+Desde 14/09/2026 o painel sobe sozinho quando o Windows inicia e fica em
+**http://localhost:8501** — só neste PC, sem depender do Streamlit Cloud, que dorme
+após 12h sem visita.
+
+| Peça | Onde | O que faz |
+|---|---|---|
+| `Painel de Opcoes.vbs` | pasta Inicializar (`Win+R` → `shell:startup`) | roda o `iniciar-painel.cmd` escondido ao entrar no Windows |
+| `iniciar-painel.cmd` | aqui no projeto | sobe o Streamlit em `127.0.0.1:8501` e, se cair, tenta de novo a cada 30 s |
+| `parar-painel.cmd` | aqui no projeto | encerra o painel e o laço de reinício |
+| `painel.log` | aqui no projeto | log; acima de 5 MB vira `painel.old.log` |
+
+- **Privado de verdade:** escuta só em `127.0.0.1`, então nem outro aparelho da
+  rede de casa acessa. Por isso não abre no celular.
+- **Desativar o início automático:** apague `Painel de Opcoes.vbs` da pasta Inicializar.
+- O endereço vai por linha de comando, não pelo `.streamlit/config.toml`: fixar
+  `127.0.0.1` ali quebraria o deploy do Streamlit Cloud.
+- O `abrir-web.bat` abre um túnel **público** — não use se quiser manter privado.
+- Upload de `.xlsx` precisa do `openpyxl`, que não está instalado neste Python
+  (`pip install openpyxl`). CSV funciona sem ele.
+
 ## Os filtros aplicados, na ordem
 
 | # | Filtro | Regra |
