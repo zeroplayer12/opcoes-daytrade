@@ -1190,15 +1190,17 @@ GRUPOS_GLOBAIS: list[tuple[str, str, str, list[tuple[str, str, str]]]] = [
         ("SGX:FEF", "Minério de ferro", "62% Fe · US$/t · SGX"), ("GC=F", "Ouro", "US$/onça"), ("SI=F", "Prata", "US$/onça"), ("HG=F", "Cobre", "US$/libra"),
         ("PL=F", "Platina", "US$/onça"), ("ALI=F", "Alumínio", "US$/tonelada"),
         ("BHP.AX", "BHP", "mineradora · Sydney"), ("RIO.L", "Rio Tinto", "mineradora · Londres")]),
-    ("cambio", "Câmbio e juros", "moedas 24 h · Treasury em % a.a.", [
+    ("cambio", "Câmbio e juros", "moedas 24 h · juros em % a.a., variação em pontos", [
         ("USDBRL=X", "Dólar/Real", "USD/BRL"), ("DX-Y.NYB", "DXY", "dólar contra 6 moedas"),
-        ("CNY=X", "Dólar/Yuan", "USD/CNY"), ("^TNX", "Treasury 10 anos", "taxa")]),
+        ("CNY=X", "Dólar/Yuan", "USD/CNY"), ("B3:DI1C", "DI curto", "taxa % a.a. · B3"),
+        ("B3:DI1M", "DI médio", "taxa % a.a. · B3"), ("B3:DI1L", "DI longo", "taxa % a.a. · B3"),
+        ("^TNX", "Treasury 10 anos", "taxa % a.a.")]),
     ("agro", "Agrícolas e pecuária", "futuros CBOT, ICE e CME", [
         ("ZS=F", "Soja", "US¢/bushel"), ("ZC=F", "Milho", "US¢/bushel"), ("ZW=F", "Trigo", "US¢/bushel"),
         ("KC=F", "Café", "US¢/libra"), ("SB=F", "Açúcar", "US¢/libra"), ("CT=F", "Algodão", "US¢/libra"),
         ("LE=F", "Boi gordo", "US¢/libra")]),
 ]
-PULSO: list[str] = ["B3:WIN", "B3:WDO", "ES=F", "NQ=F", "BZ=F", "SGX:FEF", "^HSI", "EWZ"]
+PULSO: list[str] = ["B3:WIN", "B3:WDO", "B3:DI1M", "ES=F", "BZ=F", "SGX:FEF", "^HSI", "EWZ"]
 # Colunas da matriz de correlação. ADRs ficam de fora: correlação perto de 1
 # com o próprio papel não ensina nada.
 MOTORES: list[tuple[str, str]] = [
@@ -1367,7 +1369,7 @@ def _curva_b3(simbolo: str, dia: date) -> list[tuple[int, float]]:
     return pontos
 
 
-def cotacao_futuro_b3(ativo: str, casas: int) -> dict | None:
+def cotacao_futuro_b3(ativo: str, casas: int, escolher=None, unidade: str = "%") -> dict | None:
     """Minicontrato da B3 (WIN, WDO) no vencimento vigente, pelo site de cotações (15 min de atraso).
 
     Antes do primeiro negócio a B3 publica o preço teórico do leilão de abertura
@@ -1389,7 +1391,9 @@ def cotacao_futuro_b3(ativo: str, casas: int) -> dict | None:
                        and vencimento(c) >= f"{consulta:%Y-%m-%d}"), key=vencimento)
     if not vigentes:
         return None
-    contrato = vigentes[0]
+    contrato = escolher(vigentes, consulta.date()) if escolher else vigentes[0]
+    if not contrato:
+        return None
     q = contrato.get("SctyQtn") or {}
     ref = q.get("prvsDayAdjstmntPric")
     ultimo, fase = q.get("curPrc"), "regular"
@@ -1410,7 +1414,7 @@ def cotacao_futuro_b3(ativo: str, casas: int) -> dict | None:
     ref = float(ref) if ref else None
     return {"ultimo": ultimo, "ref": ref, "var": ultimo - ref if ref else None,
             "var_pct": (ultimo / ref - 1) * 100 if ref else None, "hora": hora, "fase": fase,
-            "pontos": pontos, "casas_fixas": casas, "contrato": contrato["symb"]}
+            "pontos": pontos, "casas_fixas": casas, "contrato": contrato["symb"], "unidade": unidade}
 
 
 def cotacao_ibov_futuro() -> dict | None:
@@ -1423,8 +1427,34 @@ def cotacao_dolar_futuro() -> dict | None:
     return cotacao_futuro_b3("WDO", 1)
 
 
+def _vertice_di(anos: int):
+    """Escolhe o DI de janeiro `anos` depois do curto (o primeiro janeiro a mais de 90 dias).
+
+    Assim os vértices rolam sozinhos: em 2026 são jan/27, jan/29 e jan/31, e o
+    curto não vira um contrato a poucos dias do vencimento, que quase não oscila.
+    """
+    def escolher(vigentes: list[dict], dia: date) -> dict | None:
+        janeiros = [c for c in vigentes if re.fullmatch(r"DI1F\d\d", str(c.get("symb")))]
+        limite = f"{dia + timedelta(days=90):%Y-%m-%d}"
+        curtos = [c for c in janeiros
+                  if str(((c.get("asset") or {}).get("AsstSummry") or {}).get("mtrtyCode") or "") > limite]
+        if not curtos:
+            return None
+        alvo = f"DI1F{(int(curtos[0]['symb'][-2:]) + anos) % 100:02d}"
+        return next((c for c in janeiros if c["symb"] == alvo), None)
+    return escolher
+
+
+def cotacao_di(anos: int) -> dict | None:
+    """DI futuro (taxa % a.a.) no vértice de janeiro pedido; variação em pontos percentuais."""
+    return cotacao_futuro_b3("DI1", 3, escolher=_vertice_di(anos), unidade="pp")
+
+
 # Mercados fora do Yahoo: símbolo interno -> função que devolve a cotação
-_FONTES_EXTRAS = {"B3:WIN": cotacao_ibov_futuro, "B3:WDO": cotacao_dolar_futuro, "SGX:FEF": cotacao_minerio}
+_FONTES_EXTRAS = {"B3:WIN": cotacao_ibov_futuro, "B3:WDO": cotacao_dolar_futuro,
+                  "B3:DI1C": lambda: cotacao_di(0), "B3:DI1M": lambda: cotacao_di(2),
+                  "B3:DI1L": lambda: cotacao_di(4), "SGX:FEF": cotacao_minerio}
+_EM_PONTOS = {"^TNX"}   # taxas do Yahoo: variação em pontos percentuais, não em %
 
 
 @cache_dados(ttl=60, show_spinner=False)
@@ -1461,6 +1491,8 @@ def cotacoes_globais(simbolos: tuple[str, ...]) -> tuple[dict[str, dict], dateti
             cot[s] = c
         if falha:
             falhas.append(falha)
+    for s in _EM_PONTOS & set(cot):
+        cot[s]["unidade"] = "pp"
     if not cot:
         raise FalhaExtracao("; ".join(falhas) or "o Yahoo Finance não devolveu cotações")
     return cot, datetime.now(BRT), falhas
@@ -1920,6 +1952,34 @@ section[data-testid="stSidebar"] .sb.first{border-top:none;padding-top:0;margin-
 .lei{display:flex;align-items:center;gap:4px;margin-top:5px;font:600 11.5px/1.2 var(--sans);}
 .lei svg.ic{width:13px;height:13px;stroke-width:2.2;}
 .lei.up{color:var(--up);} .lei.down{color:var(--down);} .lei.na{color:var(--t3);font-weight:400;}
+.guia{display:flex;gap:10px;align-items:flex-start;padding:11px 16px;margin:0 0 12px;border:1px solid var(--ln);
+  border-radius:var(--r);background:var(--s1);font:400 12.5px/1.6 var(--sans);color:var(--t3);}
+.guia svg.ic{margin-top:3px;color:var(--t2);}
+.guia b{color:var(--t2);font-weight:500;}
+.ativos{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-bottom:14px;}
+@container (max-width:1100px){ .ativos{grid-template-columns:repeat(2,minmax(0,1fr));} }
+@container (max-width:680px){ .ativos{grid-template-columns:minmax(0,1fr);} }
+.at{padding:16px 18px 12px;}
+.at-h{display:flex;align-items:center;justify-content:space-between;gap:10px;}
+.at-tk{font:600 18px/1 var(--mono);font-variant-ligatures:none;color:var(--t1);}
+.at-h .lei{margin-top:0;padding:6px 9px;border-radius:6px;background:var(--s2);border:1px solid var(--ln);}
+.dx .at-s{margin:10px 0 12px;font:400 13px/1.5 var(--sans);color:var(--t2);min-height:3em;}
+.at-s b{color:var(--t1);font-weight:500;}
+.drv{border-top:1px solid var(--ln);}
+.drv-r{display:grid;grid-template-columns:minmax(0,1fr) auto auto;grid-template-areas:"n v e" "b b b";
+  gap:6px 14px;align-items:center;padding:10px 0;border-bottom:1px solid var(--ln);}
+.drv-r:last-child{border-bottom:none;padding-bottom:4px;}
+.drv-n{grid-area:n;min-width:0;}
+.drv-n b{display:block;font:500 13px/1.3 var(--sans);color:var(--t1);}
+.drv-n span{display:block;font:400 11.5px/1.35 var(--sans);color:var(--t3);}
+.drv-n em{font-style:normal;font-variant-numeric:tabular-nums;margin-left:6px;opacity:.8;}
+.drv-v{grid-area:v;text-align:right;white-space:nowrap;}
+.drv-e{grid-area:e;text-align:right;min-width:112px;}
+.drv-b{grid-area:b;height:3px;border-radius:2px;background:var(--s3);}
+.drv-b i{display:block;height:100%;border-radius:2px;background:var(--seq);}
+.efe{display:inline-flex;align-items:center;gap:3px;font:600 11.5px/1 var(--sans);white-space:nowrap;}
+.efe svg.ic{width:13px;height:13px;stroke-width:2.2;}
+.efe.up{color:var(--up);} .efe.down{color:var(--down);} .efe.na{color:var(--t3);font-weight:400;}
 @media (prefers-reduced-motion:reduce){ .chart .bar{transition:none;} }
 </style>
 """.replace("__FONTES__", _FONTES)
@@ -1996,6 +2056,21 @@ def _variacao(v, rotulo_na: str | None = "—") -> str:
     if v < 0:
         return f'<span class="chg down">{_ic("desce")}{_num(v, 2, sufixo="%")}</span>'
     return f'<span class="chg na">{_num(v, 2, sufixo="%")}</span>'
+
+
+def _variacao_c(c: dict | None) -> str:
+    """Variação no formato do mercado: % para preço, pontos percentuais para taxa de juros."""
+    if not c or c.get("unidade") != "pp":
+        return _variacao((c or {}).get("var_pct"))
+    v = c.get("var")
+    if v is None or pd.isna(v):
+        return _variacao(None)
+    txt = _num(v, 2, sufixo=" pp", sinal=True)
+    if round(v, 2) > 0:
+        return f'<span class="chg up">{_ic("sobe")}{txt}</span>'
+    if round(v, 2) < 0:
+        return f'<span class="chg down">{_ic("desce")}{txt}</span>'
+    return f'<span class="chg na">{txt}</span>'
 
 
 def _cabecalho(fonte: str, coletado_em: datetime | None, ref_pregao: date | None,
@@ -2358,8 +2433,9 @@ def _pulso(cot: dict, agora: datetime) -> str:
     tiles = []
     for s in PULSO:
         nome, det = NOMES.get(s, (s, ""))
-        rotulo = f'<div class="l">{_esc(nome)}<span class="sub">{_esc(det)}</span></div>'
         c = cot.get(s)
+        sub = (c or {}).get("contrato") or det
+        rotulo = f'<div class="l">{_esc(nome)}<span class="sub">{_esc(sub)}</span></div>'
         if not c:
             tiles.append(f'<div class="kpi pz">{rotulo}<div class="v">—</div>'
                          f'<div class="d">sem cotação agora</div></div>')
@@ -2368,11 +2444,11 @@ def _pulso(cot: dict, agora: datetime) -> str:
         hora, _ = _hora_cotacao(c["hora"], agora)
         curva = (_sparkline(c["pontos"], c["ref"]) if len(c["pontos"]) > 1
                  else '<div class="spk-vazio">sem curva da sessão</div>')
+        absoluta = "" if c.get("unidade") == "pp" else f'{_num(c["var"], casas, sinal=True)} · '
         fase = f'<span class="fase">{c["fase"]}</span>' if c["fase"] != "regular" else ""
         tiles.append(
             f'<div class="kpi pz">{rotulo}<div class="v">{_num(c["ultimo"], casas)}</div>'
-            f'<div class="d">{_variacao(c["var_pct"])}<span class="q">{fase}'
-            f'{_num(c["var"], casas, sinal=True)} · {hora}</span></div>{curva}</div>')
+            f'<div class="d">{_variacao_c(c)}<span class="q">{fase}{absoluta}{hora}</span></div>{curva}</div>')
     return f'<div class="pulse">{"".join(tiles)}</div>'
 
 
@@ -2395,7 +2471,7 @@ def _quadro_grupo(chave: str, titulo: str, desc: str, itens: list, cot: dict,
                 f"({_num(c['ref'], casas)})")
         linhas.append(
             f'<tr title="{_escape(dica)}">{rotulo}<td>{_num(c["ultimo"], casas)}</td>'
-            f'<td>{_barra_div(c["var_pct"], escala)}{_variacao(c["var_pct"])}</td>'
+            f'<td>{_barra_div(c["var_pct"], escala)}{_variacao_c(c)}</td>'
             f'<td class="c-sp">{_sparkline(c["pontos"], c["ref"])}</td>'
             f'<td class="hr{" old" if parado else ""}">{fase}{hora}</td></tr>')
     th = '<th>Mercado</th><th>Último</th><th>Var. %</th><th class="c-sp">Sessão</th><th>Hora</th>'
@@ -2429,19 +2505,22 @@ def _leitura(fortes: pd.Series, cot: dict, sigmas: dict) -> str:
     return f'<div class="lei down">{_ic("desce")}pressão de baixa</div>'
 
 
-def _mapa_correlacao(corr: pd.DataFrame, nobs: pd.DataFrame, cot: dict, janela,
-                     dia: date | None = None, sigmas: dict | None = None) -> str:
-    """Matriz ativo da B3 × mercado em cor divergente, com o número escrito em cada célula.
+def _descricao_janela(janela, dia: date | None, barras: int = 0) -> str:
+    if janela == "hoje":
+        quando = "de hoje" if dia == datetime.now(BRT).date() else (f"de {dia:%d/%m}" if dia else "")
+        return f"retornos de 5 min · pregão {quando} · até {barras} barras"
+    return f"retornos diários · últimos {janela} pregões em comum"
+
+
+def _mapa_correlacao(corr: pd.DataFrame, nobs: pd.DataFrame, janela, dia: date | None = None) -> str:
+    """Matriz completa ativo × mercado, para consulta: cor divergente e o número em cada célula.
 
     Azul move junto, vermelho move ao contrário, e o cinza do meio é "sem
     relação"; a intensidade acompanha |ρ|, com um teto de mistura que mantém o
-    texto claro legível. A última coluna traz os dois mercados mais
-    correlacionados com o ativo, quanto cada um anda agora e a pressão que isso
-    sugere. `janela` é o número de pregões ou "hoje" (barras de 5 min).
+    texto claro legível. `janela` é o número de pregões ou "hoje" (5 min).
     """
     intradiario = janela == "hoje"
     unidade = "barras de 5 min" if intradiario else "pregões"
-    nomes = dict(MOTORES)
     th = "".join(f"<th>{_esc(n)}</th>" for _, n in MOTORES)
     linhas = []
     for ativo in ATIVOS:
@@ -2458,44 +2537,113 @@ def _mapa_correlacao(corr: pd.DataFrame, nobs: pd.DataFrame, cot: dict, janela,
             cels.append(f'<td class="c{" fraco" if abs(r) < 0.2 else ""}" title="{_escape(dica)}" '
                         f'style="background:color-mix(in oklab,{base} {6 + 66 * min(1.0, abs(r)):.0f}%,'
                         f'var(--c-mid))">{_num(r, 2, sinal=True)}</td>')
-        fortes = serie.dropna()
-        fortes = fortes.reindex(fortes.abs().sort_values(ascending=False).index).head(2)
-        mv = "".join(
-            f'<span class="mv"><b>{_esc(nomes[sym])}</b><em>ρ {_num(r, 2, sinal=True)}</em>'
-            f'{_variacao(cot[sym]["var_pct"] if sym in cot else None)}</span>'
-            for sym, r in fortes.items())
-        leitura = _leitura(fortes, cot, sigmas or {}) if mv else ""
-        linhas.append(f'<tr><td class="ak">{ativo}</td>{"".join(cels)}'
-                      f'<td class="lt">{mv or "—"}{leitura}</td></tr>')
+        linhas.append(f'<tr><td class="ak">{ativo}</td>{"".join(cels)}</tr>')
+    barras = int(nobs.to_numpy().max()) if nobs.size else 0
     if intradiario:
-        quando = "de hoje" if dia == datetime.now(BRT).date() else (f"de {dia:%d/%m}" if dia else "")
-        barras = int(nobs.to_numpy().max()) if nobs.size else 0
-        desc = f"retornos de 5 min · pregão {quando} · até {barras} barras"
-        janela_txt = ("<b>Pregão de hoje</b> usa barras de 5 min desde a abertura da B3 (antes dela, o último "
-                      "pregão) e mostra quem está puxando o ativo agora; precisa de ao menos 40 min de pregão. "
-                      "Ásia e minério não negociam no horário da B3 e ficam em branco.")
+        nota = ("Barras de 5 min desde a abertura da B3 (antes dela, o último pregão); cada par precisa de "
+                "40 min em comum. Ásia e minério não negociam no horário da B3 e ficam em branco.")
     else:
-        desc = f"retornos diários · últimos {janela} pregões em comum"
-        janela_txt = ("<b>20, 60 e 120 pregões</b> usam fechamentos diários: 20 mostra o momento, 120 a relação "
-                      "mais estável. Ásia e minério fecham antes da B3 abrir, então ali o número mede o quanto o "
-                      "movimento de lá antecipa o nosso.")
-    cab = (f'<div class="card-h"><div class="t">{_ic("grade")}Correlação com seus ativos</div>'
-           f'<div class="d">{desc}</div></div>')
+        nota = ("Fechamentos diários. Ásia e minério fecham antes da B3 abrir, então ali o número mede o "
+                "quanto o movimento de lá antecipa o nosso.")
     legenda = ('<div class="hm-leg"><span>−1 · move ao contrário</span><span class="grad"></span>'
                "<span>+1 · move junto</span></div>")
-    ler = (f'<div class="ler"><div class="ler-t">{_ic("info")}Como ler</div><ul>'
-           "<li><b>ρ vai de −1 a +1</b> e mede o quanto o ativo da linha anda junto com o mercado da coluna.</li>"
-           "<li><b>Azul, de +0,5 para cima</b>: sobem e caem juntos. <b>Vermelho</b>: tendem a ir em sentidos "
-           "opostos. <b>Entre −0,3 e +0,3</b>: relação fraca, que quase não ajuda a prever.</li>"
-           "<li><b>Para o pregão</b>: na última coluna, veja o que os mercados mais ligados ao ativo estão "
-           "fazendo. Correlação positiva com o mercado em queda pesa contra o ativo; correlação negativa "
-           "inverte o sinal. A <b>pressão</b> resume os dois, pesando cada movimento pelo tamanho normal dele "
-           "e ignorando |ρ| abaixo de 0,3.</li></ul>"
-           f"<p>{janela_txt} Correlação passada não garante o movimento de hoje: é contexto, não sinal de "
-           "entrada.</p></div>")
-    return (f'<div class="card">{cab}<div class="hm-wrap"><table class="hm"><thead><tr><th></th>{th}'
-            f'<th class="lt">Mais correlacionados · agora</th></tr></thead>'
-            f'<tbody>{"".join(linhas)}</tbody></table></div>{legenda}{ler}</div>')
+    return (f'<div class="card"><div class="card-h"><div class="t">{_ic("grade")}Correlação ativo × mercado</div>'
+            f'<div class="d">{_descricao_janela(janela, dia, barras)}</div></div>'
+            f'<div class="hm-wrap"><table class="hm"><thead><tr><th></th>{th}</tr></thead>'
+            f'<tbody>{"".join(linhas)}</tbody></table></div>{legenda}'
+            f'<div class="note">{_ic("info")}<span>{nota} Passe o mouse numa célula para ver quantos dados '
+            f"entraram na conta.</span></div></div>")
+
+
+_FORCAS = ((0.6, "forte"), (0.3, "moderada"), (0.0, "fraca"))
+
+
+def _forca(r: float) -> str:
+    return next(nome for limite, nome in _FORCAS if abs(r) >= limite)
+
+
+def _movimento(c: dict) -> str:
+    """'cai 2,6%' ou 'sobe 0,10 pp', no formato do mercado."""
+    if abs(c.get("var_pct") or 0.0) < 0.05:
+        return "está estável"
+    if c.get("unidade") == "pp":
+        v, txt = c.get("var") or 0.0, f"{_num(abs(c.get('var') or 0.0), 2)} pp"
+    else:
+        v, txt = c["var_pct"], f"{_num(abs(c['var_pct']), 1)}%"
+    return f"{'sobe' if v > 0 else 'cai'} {txt}"
+
+
+def _frase(ativo: str, mercados: pd.Series, cot: dict, intradiario: bool) -> str:
+    """Uma frase com o mercado de relação mais forte e o que ele faz agora."""
+    nomes = dict(MOTORES)
+    for sym, r in mercados.items():
+        c = cot.get(sym)
+        if abs(r) < 0.3 or not c or c.get("var_pct") is None:
+            continue
+        if intradiario:
+            relacao = "tem andado junto com" if r > 0 else "tem ido na direção contrária de"
+            return f"<b>{_esc(nomes[sym])}</b> {_movimento(c)} e, no pregão, {relacao} {ativo}."
+        relacao = "costuma andar junto com" if r > 0 else "costuma ir na direção contrária de"
+        return f"<b>{_esc(nomes[sym])}</b> {_movimento(c)} e {relacao} {ativo}."
+    return f"Nenhum mercado tem relação forte com {ativo} nesta janela: os sinais de fora ajudam pouco."
+
+
+def _efeito(r: float, c: dict | None) -> str:
+    """O que o movimento de agora faz com o ativo, dada a relação entre os dois."""
+    if abs(r) < 0.3:
+        return '<span class="efe na">relação fraca</span>'
+    if not c or c.get("var_pct") is None or abs(c["var_pct"]) < 0.05:
+        return '<span class="efe na">parado</span>'
+    if r * c["var_pct"] > 0:
+        return f'<span class="efe up">{_ic("sobe")}puxa para cima</span>'
+    return f'<span class="efe down">{_ic("desce")}puxa para baixo</span>'
+
+
+def _cartoes_ativos(corr: pd.DataFrame, cot: dict, sigmas: dict, janela, dia: date | None) -> str:
+    """Um cartão por ativo: os mercados que mais andam com ele, o que fazem agora e a pressão.
+
+    É a matriz traduzida: a relação em palavras (anda junto ou contra; fraca,
+    moderada ou forte), o movimento de agora e o efeito que ele tem no ativo.
+    Entram até três mercados de relação moderada ou forte; sem nenhum, os dois
+    mais fortes, marcados como relação fraca.
+    """
+    intradiario = janela == "hoje"
+    nomes = dict(MOTORES)
+    cartoes = []
+    for ativo in ATIVOS:
+        s = B3_YAHOO[ativo]
+        serie = corr.loc[s].dropna() if s in corr.index else pd.Series(dtype=float)
+        ordem = serie.reindex(serie.abs().sort_values(ascending=False).index)
+        relevantes = ordem[ordem.abs() >= 0.3].head(3)
+        mostrados = relevantes if len(relevantes) else ordem.head(2)
+        linhas = []
+        for sym, r in mostrados.items():
+            c = cot.get(sym)
+            linhas.append(
+                f'<div class="drv-r"><div class="drv-n"><b>{_esc(nomes[sym])}</b>'
+                f'<span>{"anda junto" if r > 0 else "anda contra"} · {_forca(r)}'
+                f'<em>{_num(r, 2, sinal=True)}</em></span></div>'
+                f'<div class="drv-v">{_variacao_c(c)}</div><div class="drv-e">{_efeito(r, c)}</div>'
+                f'<div class="drv-b"><i style="width:{min(1.0, abs(r)) * 100:.0f}%"></i></div></div>')
+        if linhas:
+            topo = _leitura(relevantes, cot, sigmas)
+            frase = _frase(ativo, mostrados, cot, intradiario)
+        else:
+            topo, frase = "", "Sem dados suficientes nesta janela."
+        cartoes.append(f'<div class="card at"><div class="at-h"><span class="at-tk">{ativo}</span>{topo}</div>'
+                       f'<p class="at-s">{frase}</p><div class="drv">{"".join(linhas)}</div></div>')
+    if intradiario:
+        quando = ("no pregão de hoje" if dia == datetime.now(BRT).date()
+                  else (f"no pregão de {dia:%d/%m}" if dia else "no último pregão")) + ", em barras de 5 min"
+    else:
+        quando = f"nos últimos {janela} pregões"
+    guia = (f'<div class="guia">{_ic("info")}<span><b>Anda junto</b>: quando o mercado sobe, o ativo costuma '
+            "subir; <b>anda contra</b>: o contrário. <b>Força</b>: fraca abaixo de 0,3, moderada até 0,6, "
+            "forte acima disso. <b>Puxa para cima ou para baixo</b> junta essa relação com o que o mercado faz "
+            "agora, e a <b>pressão</b> soma os mercados de relação moderada ou forte, pesando cada um pelo "
+            "tamanho normal do movimento dele. É contexto para o pregão, não sinal de entrada.</span></div>")
+    return (f'<div class="sec"><div class="t">Seus ativos hoje</div><div class="d">relação medida {quando} · '
+            f'movimentos desde o fechamento anterior</div></div>{guia}<div class="ativos">{"".join(cartoes)}</div>')
 
 
 def _cartao_aviso(icone: str, titulo: str, texto: str) -> str:
@@ -2756,8 +2904,8 @@ def pagina_correlacoes(cabecalho) -> None:
         _sb("Sobre os dados")
         st.caption("Cotações do Yahoo Finance, em horário de Brasília. O atraso varia por bolsa (nos "
                    "futuros dos EUA, até cerca de 10 min); a coluna Hora mostra a do último preço.")
-        st.caption("Minério de ferro: SGX, 62% Fe em US$/t, no contrato mais negociado. Ibovespa e "
-                   "dólar futuros: minicontratos do vencimento vigente, pelo site da B3 (15 min de atraso).")
+        st.caption("Minério de ferro: SGX, 62% Fe em US$/t, no contrato mais negociado. Ibovespa, dólar "
+                   "e DI futuros: site da B3, com 15 min de atraso; o DI nos janeiros curto, médio e longo.")
     ritmo = "Atualiza a cada <b>1 min</b>" if auto else "Atualização <b>manual</b>"
     _html(_moldura("O que os mercados lá fora fizeram enquanto a B3 estava fechada",
                    f'<span class="pill">{_ic("fonte")}<b>Yahoo Finance</b></span>'
@@ -2805,18 +2953,25 @@ def _painel_mercados() -> None:
             else:
                 dia = None
                 corr, nobs = matriz_correlacao(hist, linhas_b3, colunas, int(janela))
-        mapa = _mapa_correlacao(corr, nobs, cot, janela, dia=dia, sigmas=sigmas)
+        mapa = _mapa_correlacao(corr, nobs, janela, dia=dia)
+        ativos_html = _cartoes_ativos(corr, cot, sigmas, janela, dia)
     except Exception as exc:
-        mapa = _cartao_aviso("grade", "Correlação com seus ativos",
-                             f"Não consegui montar a matriz agora: {_esc(exc)}")
+        mapa = ""
+        ativos_html = _cartao_aviso("grade", "Seus ativos hoje",
+                                    f"Não consegui calcular as correlações agora: {_esc(exc)}")
 
     agora = datetime.now(BRT)
     variacoes = [abs(c["var_pct"]) for c in cot.values() if c["var_pct"] is not None]
     escala = max(1.0, float(np.percentile(variacoes, 90))) if variacoes else 1.0
     quadros = "".join(_quadro_grupo(chave, titulo, desc, itens, cot, escala, agora)
                       for chave, titulo, desc, itens in GRUPOS_GLOBAIS)
-    _html(f'<div class="dx">{_pulso(cot, agora)}{mapa}'
-          f'<div class="sec"><div class="t">Cotações por mercado</div>'
+    _html(f'<div class="dx">{_pulso(cot, agora)}{ativos_html}</div>')
+    if mapa:
+        # expander, e não <details>: o estado aberto sobrevive à atualização de cada minuto
+        with st.expander(f"Ver a matriz completa · {len(ATIVOS)} ativos × {len(MOTORES)} mercados",
+                         icon=":material/grid_on:"):
+            _html(f'<div class="dx">{mapa}</div>')
+    _html(f'<div class="dx"><div class="sec"><div class="t">Cotações por mercado</div>'
           f'<div class="d">Sessão: curva do dia, com o fechamento anterior tracejado · a barra da '
           f'variação usa a mesma escala em todos os quadros</div></div>'
           f'<div class="mk-grid">{quadros}</div></div>')

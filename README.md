@@ -181,9 +181,10 @@ Para a checagem de antes da abertura: como foram a madrugada e a manhã lá fora
 
 | Bloco | O que mostra |
 |---|---|
-| **Pulso** | Ibovespa e dólar futuros, S&P 500 e Nasdaq futuros, Brent, minério de ferro, Hang Seng e EWZ: último, variação e a curva da sessão |
-| **Correlação com seus ativos** | matriz dos 6 ativos × 12 mercados (EWZ, S&P 500, VIX, Hang Seng, Brent, Minério, Cobre, Rio Tinto, Ouro, Dólar, DXY, Treasury 10 anos). Janela **Pregão de hoje** (barras de 5 min) ou de 20, 60 e 120 pregões; na última coluna, os dois mercados mais correlacionados com cada ativo, quanto andam agora e a **pressão** que isso sugere. Um guia *Como ler* fica embaixo da tabela |
-| **Cotações por mercado** | 48 mercados em 8 quadros — EUA, Brasil (Ibovespa e dólar futuros, ADRs e EWZ), Europa, Ásia, Energia, Metais e mineração, Câmbio e juros, Agrícolas |
+| **Pulso** | Ibovespa, dólar e DI futuros, S&P 500 futuro, Brent, minério de ferro, Hang Seng e EWZ: último, variação e a curva da sessão |
+| **Seus ativos hoje** | um cartão por ativo com os mercados que mais andam com ele, em linguagem simples: *anda junto* ou *anda contra*, força (fraca, moderada, forte), o movimento de agora e se ele *puxa para cima* ou *para baixo*; no topo, a **pressão** somada. Janela **Pregão de hoje** (barras de 5 min) ou de 20, 60 e 120 pregões |
+| **Matriz completa** | num expander: os 6 ativos × 12 mercados (EWZ, S&P 500, VIX, Hang Seng, Brent, Minério, Cobre, Rio Tinto, Ouro, Dólar, DXY, Treasury 10 anos), para consulta |
+| **Cotações por mercado** | 51 mercados em 8 quadros — EUA, Brasil (Ibovespa e dólar futuros, ADRs e EWZ), Europa, Ásia, Energia, Metais e mineração, Câmbio e juros (com DI curto, médio e longo), Agrícolas |
 
 A aba se atualiza sozinha a cada minuto (desligável na barra lateral) e só roda quando
 está aberta: quem fica na aba Opções não espera pelas cotações globais.
@@ -205,7 +206,11 @@ está aberta: quem fica na aba Opções não espera pelas cotações globais.
 - **Ibovespa futuro:** mini-índice (WIN) do vencimento vigente, pelo site de cotações da
   B3, com 15 min de atraso. Antes do primeiro negócio aparece o preço teórico do leilão
   de abertura (etiqueta `LEILÃO`); sem ele, o ajuste anterior (`AJUSTE`). A variação é
-  sempre contra o ajuste do dia anterior.
+  sempre contra o ajuste do dia anterior. O dólar futuro (WDO) vem do mesmo lugar; a
+  lista da B3 mistura futuros e opções, então só entra o mercado `FUT`.
+- **DI futuro:** DI1 da B3 em três vértices que rolam sozinhos — curto (o primeiro janeiro
+  a mais de 90 dias; hoje, jan/27), médio (+2 anos, jan/29) e longo (+4 anos, jan/31). É
+  taxa, então a variação aparece em pontos percentuais (`+0,10 pp`), como no Treasury.
 - **ADRs e EWZ fora do pregão:** no pré e no pós-mercado de Nova York, o preço é o do
   último negócio estendido e a variação é contra o fechamento regular (etiqueta `PRÉ`).
 - **Atraso:** varia por bolsa (nos futuros dos EUA, até ~10 min). A coluna *Hora* mostra
@@ -231,8 +236,8 @@ de 5 min, e cada par precisa de ao menos 8 barras em comum (40 min). Ásia e min
 negociam no horário da B3 e ficam em branco.
 
 **Pressão.** Para cada ativo, soma ρ × (variação do mercado desde o fechamento anterior ÷
-o desvio-padrão diário dele nos últimos 60 pregões), só com os dois mais correlacionados
-e só se |ρ| ≥ 0,3. Dividir pelo desvio-padrão impede que o VIX, que anda 10% num dia
+o desvio-padrão diário dele nos últimos 60 pregões), com até três mercados de |ρ| ≥ 0,3 —
+os mesmos que aparecem no cartão do ativo. Dividir pelo desvio-padrão impede que o VIX, que anda 10% num dia
 comum, pese mais que o S&P, que anda 1%. Abaixo de 0,5 em módulo, fica "sem direção
 clara". É um resumo do que a tabela já mostra, não um sinal de entrada.
 
