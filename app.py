@@ -19,6 +19,9 @@
    Rota B   Upload    -> CSV/XLSX exportado do próprio site           (à prova de bloqueio)
    Rota D   Demo      -> grade sintética (Black-Scholes) p/ testar a interface
 
+ Aba Correlações: futuros de índices, commodities, câmbio e ADRs (Yahoo
+ Finance), com a correlação de cada mercado com os seis ativos acima.
+
  Execução:  streamlit run app.py
 ===============================================================================
 """
@@ -32,7 +35,8 @@ import re
 import sys
 import time
 import unicodedata
-from datetime import date, datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date, datetime, timedelta, timezone
 from html import escape as _escape
 from urllib.parse import urlencode
 
@@ -787,8 +791,8 @@ def _rota_selenium(ativo: str, headless: bool = True, espera: int = 25) -> pd.Da
 @cache_dados(ttl=180, show_spinner=False)
 def extrair_automatico(ativo: str, usar_selenium: bool = True, headless: bool = True,
                        du_limite: int = 40,
-                       max_vencimentos: int = 8) -> tuple[pd.DataFrame, str, list[str]]:
-    """Rotas automáticas em cascata. Devolve (df, rota, log).
+                       max_vencimentos: int = 8) -> tuple[pd.DataFrame, str, list[str], datetime]:
+    """Rotas automáticas em cascata. Devolve (df, rota, log, coletado_em).
 
     As linhas do endpoint não carregam o vencimento — semanais e mensais dividem a
     mesma letra de série. Por isso busca-se um vencimento por vez (o site filtra no
@@ -803,7 +807,7 @@ def extrair_automatico(ativo: str, usar_selenium: bool = True, headless: bool = 
         alvos = [v for v in vencimentos if 0 < v["du"] <= du_limite][:max_vencimentos]
         if not alvos:
             alvos = vencimentos[:3]
-        log.append(f"📅 {len(vencimentos)} vencimentos no site, buscando {len(alvos)}")
+        log.append(f"{len(vencimentos)} vencimentos no site; buscando {len(alvos)}")
 
         partes: list[pd.DataFrame] = []
         for venc in alvos:
@@ -812,29 +816,29 @@ def extrair_automatico(ativo: str, usar_selenium: bool = True, headless: bool = 
                 parte["Vencimento"] = venc["data"].strftime("%d/%m/%Y")
                 partes.append(parte)
                 ciclo = "mensal" if venc["mensal"] else "semanal"
-                log.append(f"  ✅ {venc['data']:%d/%m} ({venc['du']} DU, {ciclo}) — "
+                log.append(f"ok · {venc['data']:%d/%m} ({venc['du']} DU, {ciclo}) — "
                            f"{len(parte)} opções")
             except Exception as exc:
-                log.append(f"  ⚠️ {venc['data']:%d/%m} — {exc}")
+                log.append(f"aviso · {venc['data']:%d/%m} — {exc}")
 
         if partes:
             df = pd.concat(partes, ignore_index=True)
-            log.append(f"✅ Rota A1 · JSON — {len(df)} linhas em "
+            log.append(f"concluída · Rota A1 · JSON — {len(df)} linhas em "
                        f"{time.time() - inicio:.1f}s")
-            return df, "Rota A1 · JSON", log
+            return df, "Rota A1 · JSON", log, datetime.now()
         raise FalhaExtracao("nenhum vencimento retornou cotações")
     except Exception as exc:
-        log.append(f"❌ Rota A1 · JSON — {exc}")
+        log.append(f"falhou · Rota A1 · JSON — {exc}")
 
     if usar_selenium:
         try:
             inicio = time.time()
             df = _rota_selenium(ativo, headless)
-            log.append(f"✅ Rota A2 · Selenium — {len(df)} linhas em "
+            log.append(f"concluída · Rota A2 · Selenium — {len(df)} linhas em "
                        f"{time.time() - inicio:.1f}s")
-            return df, "Rota A2 · Selenium", log
+            return df, "Rota A2 · Selenium", log, datetime.now()
         except Exception as exc:
-            log.append(f"❌ Rota A2 · Selenium — {exc}")
+            log.append(f"falhou · Rota A2 · Selenium — {exc}")
 
     raise FalhaExtracao(
         "Todas as rotas automáticas falharam. Use o upload do CSV/Excel na barra lateral."
@@ -1086,12 +1090,12 @@ def aplicar_filtros(df: pd.DataFrame, vencimento: date | None,
     # 0) Nomenclatura: só a série mensal convencional da B3
     if somente_padrao:
         out = out[out["ticker"].str.match(_RE_TICKER_PADRAO, na=False)]
-        funil.append(("Série padrão B3 (descarta W/atípicas)", len(out)))
+        funil.append(("Série mensal padrão", len(out)))
 
     # 1) Vencimento (ciclo escolhido no seletor)
     if vencimento is not None and out["vencimento"].notna().any():
         out = out[out["vencimento"] == vencimento]
-    funil.append((f"Vencimento {vencimento:%d/%m/%Y}" if vencimento else "Vencimento", len(out)))
+    funil.append((f"Vencimento {vencimento:%d/%m}" if vencimento else "Vencimento", len(out)))
 
     # 2) Frescor da cotação. Opção parada há semanas mantém volume acumulado alto
     # e subiria no ranking de liquidez carregando um Delta calculado de preço
@@ -1102,12 +1106,13 @@ def aplicar_filtros(df: pd.DataFrame, vencimento: date | None,
             lambda d: dias_uteis(d, referencia) if pd.notna(d) else 10_000
         )
         out = out[atraso <= max_atraso_du]
-        funil.append((f"Negociada há ≤ {max_atraso_du} pregão(ões)", len(out)))
+        funil.append((f"Negociada há ≤ {max_atraso_du} "
+                      f"{'pregão' if max_atraso_du == 1 else 'pregões'}", len(out)))
 
     # 3) Delta absoluto na faixa obrigatória
     absd = out["delta"].abs()
     out = out[(absd >= delta_min) & (absd <= delta_max)]
-    funil.append((f"|Delta| entre {delta_min:.2f} e {delta_max:.2f}", len(out)))
+    funil.append((f"|Δ| entre {_num(delta_min, 2)} e {_num(delta_max, 2)}", len(out)))
 
     # 4) Liquidez
     if exigir_negocio:
@@ -1131,6 +1136,201 @@ def separar_calls_puts(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     calls = df[(df["tipo"] == "CALL") & (df["delta"] > 0)]
     puts = df[(df["tipo"] == "PUT")]
     return ordenar_por_liquidez(calls), ordenar_por_liquidez(puts)
+
+
+# =============================================================================
+# SEÇÃO 5B — MERCADOS GLOBAIS (aba Correlações)
+# =============================================================================
+# O que andou lá fora enquanto a B3 estava fechada. O investing.com proíbe
+# reproduzir os dados dele sem autorização por escrito, então a fonte é o
+# Yahoo Finance, que cobre os mesmos futuros e índices. Minério de ferro
+# (SGX/Dalian) não tem fonte gratuita aberta: BHP e Rio Tinto entram como
+# termômetro do setor.
+
+YAHOO_SPARK = "https://query1.finance.yahoo.com/v7/finance/spark"
+_CABECALHOS_YAHOO = {"User-Agent": HEADERS["User-Agent"], "Accept": "application/json"}
+_LOTE_YAHOO = 20                               # limite de símbolos por chamada
+BRT = timezone(timedelta(hours=-3), "BRT")     # sem horário de verão desde 2019
+JANELAS_CORR = [20, 60, 120]                   # pregões usados na correlação
+
+# (chave, título, descrição, [(símbolo no Yahoo, nome, detalhe)])
+GRUPOS_GLOBAIS: list[tuple[str, str, str, list[tuple[str, str, str]]]] = [
+    ("eua", "EUA · índices futuros", "futuros da CME, negociados quase 24 h", [
+        ("ES=F", "S&P 500", "futuro"), ("NQ=F", "Nasdaq 100", "futuro"),
+        ("YM=F", "Dow Jones", "futuro"), ("RTY=F", "Russell 2000", "futuro"),
+        ("^VIX", "VIX", "volatilidade do S&P")]),
+    ("brny", "Brasil em Nova York", "ADRs e ETF · valem o pré e o pós-mercado", [
+        ("EWZ", "EWZ", "ETF de Brasil"), ("PBR", "Petrobras", "ADR"), ("VALE", "Vale", "ADR"),
+        ("ITUB", "Itaú", "ADR"), ("BBD", "Bradesco", "ADR")]),
+    ("europa", "Europa", "pregão à vista, aberto antes da B3", [
+        ("^STOXX50E", "Euro Stoxx 50", "zona do euro"), ("^GDAXI", "DAX", "Alemanha"),
+        ("^FTSE", "FTSE 100", "Reino Unido"), ("^FCHI", "CAC 40", "França"),
+        ("FTSEMIB.MI", "FTSE MIB", "Itália"), ("^IBEX", "IBEX 35", "Espanha")]),
+    ("asia", "Ásia e Pacífico", "fecham antes da B3 abrir · Nikkei em futuro", [
+        ("NKD=F", "Nikkei 225", "futuro"), ("^HSI", "Hang Seng", "Hong Kong"),
+        ("000001.SS", "Xangai", "China"), ("000300.SS", "CSI 300", "China"),
+        ("^KS11", "KOSPI", "Coreia do Sul"), ("^AXJO", "ASX 200", "Austrália")]),
+    ("energia", "Energia", "futuros NYMEX e ICE", [
+        ("BZ=F", "Petróleo Brent", "US$/barril"), ("CL=F", "Petróleo WTI", "US$/barril"),
+        ("NG=F", "Gás natural", "US$/MMBtu"), ("RB=F", "Gasolina RBOB", "US$/galão"),
+        ("HO=F", "Óleo de aquecimento", "US$/galão")]),
+    ("metais", "Metais e mineração", "COMEX · BHP e Rio Tinto no lugar do minério", [
+        ("GC=F", "Ouro", "US$/onça"), ("SI=F", "Prata", "US$/onça"), ("HG=F", "Cobre", "US$/libra"),
+        ("PL=F", "Platina", "US$/onça"), ("ALI=F", "Alumínio", "US$/tonelada"),
+        ("BHP.AX", "BHP", "mineradora · Sydney"), ("RIO.L", "Rio Tinto", "mineradora · Londres")]),
+    ("cambio", "Câmbio e juros", "moedas 24 h · Treasury em % a.a.", [
+        ("USDBRL=X", "Dólar/Real", "USD/BRL"), ("DX-Y.NYB", "DXY", "dólar contra 6 moedas"),
+        ("CNY=X", "Dólar/Yuan", "USD/CNY"), ("^TNX", "Treasury 10 anos", "taxa")]),
+    ("agro", "Agrícolas e pecuária", "futuros CBOT, ICE e CME", [
+        ("ZS=F", "Soja", "US¢/bushel"), ("ZC=F", "Milho", "US¢/bushel"), ("ZW=F", "Trigo", "US¢/bushel"),
+        ("KC=F", "Café", "US¢/libra"), ("SB=F", "Açúcar", "US¢/libra"), ("CT=F", "Algodão", "US¢/libra"),
+        ("LE=F", "Boi gordo", "US¢/libra")]),
+]
+PULSO: list[str] = ["ES=F", "NQ=F", "BZ=F", "^HSI", "USDBRL=X", "EWZ"]
+# Colunas da matriz de correlação. ADRs ficam de fora: correlação perto de 1
+# com o próprio papel não ensina nada.
+MOTORES: list[tuple[str, str]] = [
+    ("EWZ", "EWZ"), ("ES=F", "S&P 500"), ("^VIX", "VIX"), ("^HSI", "Hang Seng"), ("BZ=F", "Brent"),
+    ("HG=F", "Cobre"), ("RIO.L", "Rio Tinto"), ("GC=F", "Ouro"), ("USDBRL=X", "Dólar"),
+    ("DX-Y.NYB", "DXY"), ("^TNX", "Treasury"),
+]
+B3_YAHOO: dict[str, str] = {ativo: f"{ativo}.SA" for ativo in ATIVOS}
+NOMES: dict[str, tuple[str, str]] = {s: (nome, det) for *_, itens in GRUPOS_GLOBAIS for s, nome, det in itens}
+
+
+def simbolos_mercados() -> tuple[str, ...]:
+    """Todos os símbolos da aba, sem repetição, na ordem dos grupos."""
+    todos = [s for *_, itens in GRUPOS_GLOBAIS for s, _, _ in itens] + PULSO + [s for s, _ in MOTORES]
+    return tuple(dict.fromkeys(todos))
+
+
+def _spark(simbolos: list[str], faixa: str, intervalo: str) -> tuple[dict[str, dict], list[str]]:
+    """Endpoint spark do Yahoo, em lotes de 20 disparados em paralelo.
+
+    Devolve {símbolo: resposta} e os lotes que falharam: um lote fora do ar não
+    derruba a aba inteira.
+    """
+    lotes = [simbolos[i:i + _LOTE_YAHOO] for i in range(0, len(simbolos), _LOTE_YAHOO)]
+    base = {"range": faixa, "interval": intervalo, "includePrePost": "true"}
+
+    def busca(lote: list[str]) -> tuple[list, str | None]:
+        try:
+            dados = _get_json(YAHOO_SPARK, {**base, "symbols": ",".join(lote)}, _CABECALHOS_YAHOO, 20)
+            return ((dados or {}).get("spark") or {}).get("result") or [], None
+        except Exception as exc:
+            return [], f"{lote[0]} e mais {len(lote) - 1}: {exc}"
+
+    if NO_NAVEGADOR or len(lotes) <= 1:
+        blocos = [busca(lote) for lote in lotes]
+    else:
+        with ThreadPoolExecutor(max_workers=len(lotes)) as pool:
+            blocos = list(pool.map(busca, lotes))
+    respostas, falhas = {}, []
+    for itens, falha in blocos:
+        if falha:
+            falhas.append(falha)
+        for item in itens:
+            resp = (item.get("response") or [None])[0]
+            if item.get("symbol") and resp:
+                respostas[item["symbol"]] = resp
+    return respostas, falhas
+
+
+def _fechamentos(resp: dict) -> list:
+    return (((resp.get("indicators") or {}).get("quote") or [{}])[0].get("close")) or []
+
+
+def ler_cotacao(resp: dict, agora: float) -> dict | None:
+    """Último preço, variação e curva do dia a partir de uma resposta do spark.
+
+    A referência é o fechamento anterior (o ajuste, nos futuros). Em ADR e ETF
+    de Nova York fora do pregão, o último negócio do pré ou do pós-mercado vira
+    o preço e a referência passa a ser o fechamento regular.
+    """
+    meta = resp.get("meta") or {}
+    ultimo = meta.get("regularMarketPrice")
+    if ultimo is None:
+        return None
+    ref = meta.get("previousClose") or meta.get("chartPreviousClose")
+    hora = int(meta.get("regularMarketTime") or 0)
+    pontos = [(int(t), float(c)) for t, c in zip(resp.get("timestamp") or [], _fechamentos(resp))
+              if c is not None]
+    fase = "regular"
+    if meta.get("hasPrePostMarketData") and pontos and pontos[-1][0] > hora + 120:
+        abertura = int(((meta.get("currentTradingPeriod") or {}).get("regular") or {}).get("start") or 0)
+        fase = "pré" if agora < abertura else "pós"
+        pontos = [p for p in pontos if p[0] > hora]
+        ref, ultimo, hora = ultimo, pontos[-1][1], pontos[-1][0]
+    ultimo = float(ultimo)
+    ref = float(ref) if ref else None
+    return {"ultimo": ultimo, "ref": ref, "var": ultimo - ref if ref else None,
+            "var_pct": (ultimo / ref - 1) * 100 if ref else None, "hora": hora, "fase": fase,
+            "pontos": pontos, "casas": int(meta.get("priceHint") or 2)}
+
+
+@cache_dados(ttl=60, show_spinner=False)
+def cotacoes_globais(simbolos: tuple[str, ...]) -> tuple[dict[str, dict], datetime, list[str]]:
+    """Cotação de cada símbolo, com a curva do dia em barras de 5 min (cache de 1 min)."""
+    respostas, falhas = _spark(list(simbolos), "1d", "5m")
+    agora = time.time()
+    cot = {}
+    for s in simbolos:
+        c = ler_cotacao(respostas[s], agora) if s in respostas else None
+        if c:
+            cot[s] = c
+    if not cot:
+        raise FalhaExtracao("; ".join(falhas) or "o Yahoo Finance não devolveu cotações")
+    return cot, datetime.now(BRT), falhas
+
+
+@cache_dados(ttl=3600, show_spinner=False)
+def historico_diario(simbolos: tuple[str, ...]) -> pd.DataFrame:
+    """Fechamentos diários de um ano, indexados pela data local de cada bolsa.
+
+    A data local importa: a barra diária de um futuro de Nova York e a do Hang
+    Seng têm carimbos UTC diferentes, mas pertencem ao mesmo dia.
+    """
+    respostas, falhas = _spark(list(simbolos), "1y", "1d")
+    series = {}
+    for s, resp in respostas.items():
+        meta = resp.get("meta") or {}
+        ts = pd.to_datetime(pd.Series(resp.get("timestamp") or [], dtype="int64"), unit="s", utc=True)
+        try:
+            datas = list(ts.dt.tz_convert(meta.get("exchangeTimezoneName") or "UTC").dt.date)
+        except Exception:
+            # Sem base de fusos no sistema: o deslocamento atual mais 2 h mantém a
+            # data certa mesmo para barras de antes de uma troca de horário de verão.
+            datas = list((ts + pd.Timedelta(seconds=int(meta.get("gmtoffset") or 0) + 7200)).dt.date)
+        fech = _fechamentos(resp)[:len(datas)]
+        serie = pd.Series(fech, index=datas[:len(fech)], dtype=float).dropna()
+        if not serie.empty:
+            series[s] = serie[~serie.index.duplicated(keep="last")]
+    if not series:
+        raise FalhaExtracao("; ".join(falhas) or "o Yahoo Finance não devolveu o histórico")
+    return pd.DataFrame(series).sort_index()
+
+
+def matriz_correlacao(hist: pd.DataFrame, linhas: list[str], colunas: list[str],
+                      janela: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Pearson dos retornos diários, par a par, nos últimos `janela` pregões em comum.
+
+    Cada série vira retorno sobre o próprio pregão anterior antes do cruzamento,
+    para que o feriado de uma bolsa não apague o retorno do dia seguinte na
+    outra. Par com menos da metade da janela em comum fica em branco.
+    """
+    retornos = {c: hist[c].dropna().pct_change().dropna() for c in hist.columns}
+    corr = pd.DataFrame(np.nan, index=linhas, columns=colunas)
+    nobs = pd.DataFrame(0, index=linhas, columns=colunas)
+    minimo = max(10, janela // 2)
+    for a in linhas:
+        for b in colunas:
+            if a not in retornos or b not in retornos:
+                continue
+            par = pd.concat([retornos[a], retornos[b]], axis=1, join="inner").dropna().tail(janela)
+            if len(par) >= minimo:
+                corr.loc[a, b] = float(par.iloc[:, 0].corr(par.iloc[:, 1]))
+                nobs.loc[a, b] = len(par)
+    return corr, nobs
 
 
 # =============================================================================
@@ -1187,463 +1387,1126 @@ def tabela_exibicao(df: pd.DataFrame) -> pd.DataFrame:
 # =============================================================================
 # SEÇÃO 7 — INTERFACE
 # =============================================================================
+# Direção visual (skill ui-ux-pro-max): Swiss/minimal escuro e denso, Fira Sans
+# na interface e Fira Code nos códigos de negociação. A cor fica reservada para
+# os dados (skill dataviz): call e put são identidade, não bom/ruim, e usam o par
+# categórico validado — azul #3987e5 e laranja #d95926, ΔE CVD 26,8 sobre a
+# superfície dos cards. Verde e vermelho aparecem só em variação com sinal,
+# sempre com seta. O cromo da interface é monocromático.
+
+_FONTES = ("https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600"
+           "&family=Fira+Sans:wght@400;500;600;700&display=swap")
 
 _CSS = """
 <style>
-  :root{
-    --fg:#e8edf3; --muted:#8b98a9; --linha:rgba(255,255,255,.09);
-    --card:#161b22; --card-topo:#1b222b;
-    --call:#26d07c; --put:#fb5f7a; --neutro:#9aa7b8;
-    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
-  }
-  .block-container{padding-top:1.8rem;padding-bottom:4rem;max-width:1560px;}
+@import url('__FONTES__');
+:root{
+  --bg:#05070C; --s1:#0B0F1A; --s2:#10151F; --s3:#171D2C;
+  --ln:#1C2333; --ln2:#29324A;
+  --t1:#F1F5F9; --t2:#A3AEC2; --t3:#7C889E;
+  --call:#3987e5; --put:#d95926;
+  --up:#22C55E; --down:#F05252; --gray-mark:#222939; --seq:#64748B;
+  --c-pos:#3987e5; --c-neg:#e66767; --c-mid:#222838;
+  --sans:'Fira Sans',system-ui,-apple-system,'Segoe UI',sans-serif;
+  --mono:'Fira Code',ui-monospace,Consolas,monospace;
+  --r:10px;
+}
+[data-testid="stAppViewContainer"],[data-testid="stMain"]{background:var(--bg);}
+[data-testid="stHeader"]{background:transparent;}
+[data-testid="stDecoration"]{display:none;}
+.block-container{padding:1rem 2rem 3rem!important;max-width:100%!important;}
+[data-testid="stWidgetLabel"] p{font:600 11px/1.2 var(--sans)!important;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--t3)!important;}
+[data-testid="stCheckbox"] [data-testid="stWidgetLabel"] p,[data-testid="stToggle"] [data-testid="stWidgetLabel"] p,
+[data-testid="stCheckbox"] label p{font:400 13px/1.4 var(--sans)!important;letter-spacing:0;
+  text-transform:none;color:var(--t2)!important;}
+section[data-testid="stSidebar"] .sb{font:600 11px/1 var(--sans);letter-spacing:.1em;
+  text-transform:uppercase;color:var(--t2);margin:20px 0 8px;padding-top:14px;border-top:1px solid var(--ln);}
+section[data-testid="stSidebar"] .sb.first{border-top:none;padding-top:0;margin-top:4px;}
 
-  /* ---- cabeçalho ---- */
-  .op-titulo{font-size:1.9rem;font-weight:700;letter-spacing:-.02em;margin:0 0 .15rem;}
-  .op-sub{color:var(--muted);font-size:.86rem;margin:0 0 1.1rem;}
-  .op-resumo{display:flex;flex-wrap:wrap;gap:.45rem 1.4rem;align-items:baseline;
-             padding:.7rem 0 .9rem;border-bottom:1px solid var(--linha);margin-bottom:1.4rem;}
-  .op-resumo b{font-weight:650;}
-  .op-resumo span{color:var(--muted);font-size:.85rem;}
+.dx,.dx *{box-sizing:border-box;}
+.dx{font-family:var(--sans);color:var(--t1);-webkit-font-smoothing:antialiased;container-type:inline-size;}
+.dx .mono{font-family:var(--mono);font-variant-ligatures:none;}
+.dx svg.ic{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:1.8;
+  stroke-linecap:round;stroke-linejoin:round;flex:none;}
 
-  /* ---- card da sugestão ---- */
-  .op-card{border:1px solid var(--linha);border-radius:14px;background:var(--card);
-           overflow:hidden;margin-bottom:.9rem;}
-  .op-card-topo{padding:1rem 1.15rem .9rem;background:var(--card-topo);
-                border-bottom:1px solid var(--linha);position:relative;}
-  .op-card-topo::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;}
-  .op-call .op-card-topo::before{background:var(--call);}
-  .op-put  .op-card-topo::before{background:var(--put);}
-  .op-linha1{display:flex;align-items:center;gap:.6rem;margin-bottom:.55rem;}
-  .op-tick{font-family:var(--mono);font-size:1.02rem;font-weight:650;letter-spacing:.01em;}
-  .op-etiqueta{font-size:.62rem;font-weight:700;letter-spacing:.09em;text-transform:uppercase;
-               padding:.2rem .45rem;border-radius:5px;border:1px solid var(--linha);
-               color:var(--muted);}
-  .op-etiqueta.itm{color:var(--call);border-color:rgba(38,208,124,.35);}
-  .op-etiqueta.atm{color:#e5b567;border-color:rgba(229,181,103,.35);}
-  .op-preco{display:flex;align-items:baseline;gap:.6rem;}
-  .op-preco b{font-size:2.05rem;font-weight:680;letter-spacing:-.025em;line-height:1;}
-  .op-var{font-size:.9rem;font-weight:600;font-family:var(--mono);}
-  .op-var.pos{color:var(--call);} .op-var.neg{color:var(--put);}
-  .op-var.nulo{color:var(--muted);font-weight:400;}
+/* cabeçalho */
+.hdr{display:flex;align-items:center;justify-content:space-between;gap:14px 24px;flex-wrap:wrap;
+  padding:2px 0 8px;margin-bottom:0;}
+.brand{display:flex;align-items:center;gap:12px;}
+.brand .mark{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;color:var(--t1);
+  background:linear-gradient(150deg,#1B2335 0%,#0C111D 100%);border:1px solid var(--ln2);}
+.brand .mark svg.ic{width:18px;height:18px;}
+.brand .t{font:600 17px/1.2 var(--sans);letter-spacing:-.01em;}
+.brand .s{font:400 12.5px/1.3 var(--sans);color:var(--t3);margin-top:2px;}
+.status{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.pill{display:inline-flex;align-items:center;gap:7px;padding:7px 11px;border:1px solid var(--ln);
+  border-radius:999px;background:var(--s1);font:400 12px/1 var(--sans);color:var(--t2);white-space:nowrap;}
+.pill b{color:var(--t1);font-weight:500;}
+.pill .dot{width:7px;height:7px;border-radius:50%;background:var(--up);box-shadow:0 0 0 3px rgba(34,197,94,.15);}
+.pill .dot.off{background:var(--t3);box-shadow:none;}
+.pill.warn{border-color:rgba(240,82,82,.35);}
 
-  /* ---- trio de métricas ---- */
-  .op-trio{display:grid;grid-template-columns:repeat(3,1fr);}
-  .op-trio>div{padding:.8rem 1.15rem;border-right:1px solid var(--linha);}
-  .op-trio>div:last-child{border-right:none;}
-  .op-trio span{display:block;font-size:.65rem;letter-spacing:.09em;text-transform:uppercase;
-                color:var(--muted);margin-bottom:.28rem;}
-  .op-trio b{font-size:1.06rem;font-weight:620;font-family:var(--mono);letter-spacing:-.01em;}
+/* KPIs */
+.kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin:14px 0 14px;}
+.kpi{background:var(--s1);border:1px solid var(--ln);border-radius:var(--r);padding:14px 16px 13px;min-width:0;}
+.kpi .l{display:flex;align-items:center;gap:7px;font:500 11px/1 var(--sans);letter-spacing:.08em;
+  text-transform:uppercase;color:var(--t3);}
+.kpi .v{font:600 23px/1.15 var(--sans);letter-spacing:-.015em;margin-top:10px;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;}
+.kpi .d{font:400 12.5px/1.35 var(--sans);color:var(--t2);margin-top:4px;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;}
 
-  .op-aviso{color:var(--muted);font-size:.78rem;line-height:1.6;margin:-.4rem 0 .9rem;
-            padding:.6rem .8rem;border-left:2px solid rgba(120,170,255,.45);
-            background:rgba(120,170,255,.06);border-radius:0 8px 8px 0;}
-  .op-aviso b{color:var(--fg);font-weight:600;}
-  .op-nota{color:var(--muted);font-size:.76rem;line-height:1.55;
-           padding:.1rem .15rem 1rem;}
+/* quadro principal */
+.board{display:grid;gap:14px;grid-template-columns:repeat(2,minmax(0,1fr));
+  grid-template-areas:"call put" "chart chart" "tabs tabs" "funil funil";}
+.a-call{grid-area:call}.a-put{grid-area:put}.a-chart{grid-area:chart}.a-funil{grid-area:funil}
+.a-tabs{grid-area:tabs;display:grid;gap:14px;grid-template-columns:minmax(0,1fr);}
+.board>div>.card{height:100%;}
+@container (min-width:1700px){
+  .board{grid-template-columns:minmax(0,1fr) minmax(0,1.3fr) minmax(0,1fr);
+    grid-template-areas:"call chart put" "tabs tabs tabs" "funil funil funil";}
+  .a-tabs{grid-template-columns:repeat(2,minmax(0,1fr));}
+}
+@container (max-width:1050px){
+  .kpis{grid-template-columns:repeat(3,minmax(0,1fr));}
+  .kpis .kpi:last-child{grid-column:span 2;}
+}
+@container (max-width:860px){
+  .board{grid-template-columns:minmax(0,1fr);
+    grid-template-areas:"call" "put" "chart" "tabs" "funil";}
+}
+@container (max-width:560px){
+  .kpis{grid-template-columns:repeat(2,minmax(0,1fr));}
+  .kpis .kpi:last-child{grid-column:span 2;}
+  .kpi .v{font-size:18px;white-space:normal;}
+  .kpi .d{white-space:normal;}
+}
+.card{background:var(--s1);border:1px solid var(--ln);border-radius:var(--r);min-width:0;overflow:hidden;}
+.card-h{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 18px;
+  border-bottom:1px solid var(--ln);}
+.card-h .t{display:flex;align-items:center;gap:9px;font:600 13.5px/1.2 var(--sans);}
+.card-h .d{font:400 12px/1.3 var(--sans);color:var(--t3);text-align:right;}
 
-  /* ---- tabela top 3 ---- */
-  .op-tab-wrap{overflow-x:auto;border:1px solid var(--linha);border-radius:12px;}
-  table.op-tab{width:100%;border-collapse:collapse;font-size:.79rem;}
-  table.op-tab th{font-size:.62rem;letter-spacing:.08em;text-transform:uppercase;
-                  color:var(--muted);font-weight:600;text-align:right;
-                  padding:.6rem .7rem;border-bottom:1px solid var(--linha);
-                  white-space:nowrap;background:var(--card-topo);}
-  table.op-tab th:first-child,table.op-tab td:first-child{text-align:left;
-                  position:sticky;left:0;background:var(--card);}
-  table.op-tab th:first-child{background:var(--card-topo);}
-  table.op-tab td{padding:.55rem .7rem;text-align:right;white-space:nowrap;
-                  border-bottom:1px solid rgba(255,255,255,.05);
-                  font-family:var(--mono);font-variant-numeric:tabular-nums;}
-  table.op-tab tr:last-child td{border-bottom:none;}
-  table.op-tab tr:hover td{background:rgba(255,255,255,.03);}
-  table.op-tab td.tick{font-weight:620;}
-  table.op-tab td.txt{font-family:inherit;color:var(--muted);}
-  table.op-tab td.pos{color:var(--call);} table.op-tab td.neg{color:var(--put);}
-  table.op-tab tr.destaque td{background:rgba(255,255,255,.045);}
-  table.op-tab tr.destaque td:first-child{background:rgba(255,255,255,.045);}
+/* sinal */
+.sig{position:relative;}
+.sig::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;}
+.sig.call::before{background:var(--call);} .sig.put::before{background:var(--put);}
+.sig-top{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:16px 20px 0 22px;}
+.side{display:inline-flex;align-items:center;gap:8px;font:600 11px/1 var(--sans);letter-spacing:.12em;
+  text-transform:uppercase;color:var(--t2);}
+.side i{width:9px;height:9px;border-radius:2px;display:inline-block;}
+.call .side i{background:var(--call);} .put .side i{background:var(--put);}
+.chips{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;}
+.chip{font:500 11px/1 var(--sans);padding:5px 8px;border-radius:6px;border:1px solid var(--ln);
+  background:var(--s2);color:var(--t2);white-space:nowrap;}
+.chip.strong{color:var(--t1);border-color:var(--ln2);}
+.sig-main{padding:12px 20px 0 22px;}
+.sig-tick{font:600 27px/1.1 var(--mono);letter-spacing:.01em;font-variant-ligatures:none;}
+.sig-rank{font:400 12.5px/1.4 var(--sans);color:var(--t3);margin-top:5px;}
+.sig-price{display:flex;align-items:baseline;flex-wrap:wrap;gap:6px 12px;margin-top:16px;}
+.sig-price .p{font:600 36px/1 var(--sans);letter-spacing:-.025em;}
+.sig-price .p small{font-size:15px;font-weight:500;color:var(--t2);margin-right:5px;letter-spacing:0;}
+.chg{display:inline-flex;align-items:center;gap:3px;font:600 13px/1 var(--sans);}
+.chg svg.ic{width:14px;height:14px;stroke-width:2.2;}
+.chg.up{color:var(--up);} .chg.down{color:var(--down);} .chg.na{color:var(--t3);font-weight:400;}
+.sig-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));margin-top:18px;border-top:1px solid var(--ln);}
+.sig-grid>div{padding:12px 18px 13px 22px;border-right:1px solid var(--ln);border-bottom:1px solid var(--ln);min-width:0;}
+.sig-grid>div:nth-child(3n){border-right:none;}
+.sig-grid>div:nth-last-child(-n+3){border-bottom:none;}
+.sig-grid span{display:block;font:500 10.5px/1 var(--sans);letter-spacing:.08em;text-transform:uppercase;color:var(--t3);}
+.sig-grid b{display:block;font:600 16px/1.2 var(--sans);margin-top:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.meter{padding:13px 20px 17px 22px;border-top:1px solid var(--ln);}
+.meter .row{display:flex;justify-content:space-between;gap:10px;font:400 12px/1.2 var(--sans);color:var(--t3);}
+.meter .row b{color:var(--t1);font-weight:600;}
+.track{position:relative;height:6px;border-radius:999px;background:var(--s3);margin:11px 0 7px;}
+.band{position:absolute;top:0;bottom:0;border-radius:999px;background:rgba(226,232,240,.18);}
+.pin{position:absolute;top:50%;width:13px;height:13px;border-radius:50%;transform:translate(-50%,-50%);
+  border:2px solid var(--s1);}
+.call .pin{background:var(--call);} .put .pin{background:var(--put);}
+.ticks{position:relative;height:12px;font:400 10.5px/1 var(--sans);color:var(--t3);}
+.ticks span{position:absolute;transform:translateX(-50%);}
+.sig.empty .sig-main{padding-bottom:26px;}
+.sig.empty .msg{font:400 13.5px/1.55 var(--sans);color:var(--t2);margin-top:10px;max-width:46ch;}
 
-  /* ---- sidebar e rodapé ---- */
-  section[data-testid="stSidebar"] h4{font-size:.68rem;letter-spacing:.1em;
-        text-transform:uppercase;color:var(--muted);margin:1.3rem 0 .3rem;}
-  .rodape{opacity:.55;font-size:.76rem;line-height:1.6;margin-top:2rem;
-          padding-top:1rem;border-top:1px solid var(--linha);}
+/* gráfico */
+.legend{display:flex;gap:6px 16px;flex-wrap:wrap;justify-content:flex-end;font:400 12px/1.2 var(--sans);color:var(--t2);}
+.legend span{display:inline-flex;align-items:center;gap:6px;}
+.legend i{width:10px;height:10px;border-radius:2px;display:inline-block;}
+.legend i.rule{width:2px;height:12px;border-radius:0;background:var(--t2);}
+.chart-wrap{overflow-x:auto;padding:10px 14px 8px 6px;}
+.chart{display:flex;min-width:640px;}
+.chart .yax{flex:0 0 64px;} .chart .plot{flex:1 1 auto;min-width:0;}
+.chart svg{display:block;overflow:visible;}
+.chart text{font-family:var(--sans);font-size:11px;fill:var(--t3);}
+.chart text.side-l{font-size:10px;letter-spacing:.1em;text-transform:uppercase;fill:var(--t2);font-weight:600;}
+.chart text.pk{font-family:var(--mono);font-size:11px;font-weight:600;fill:var(--t1);}
+.chart text.sp{fill:var(--t2);font-size:11px;}
+.chart .grid{stroke:var(--ln);stroke-width:1;}
+.chart .base{stroke:var(--ln2);stroke-width:1;}
+.chart .spot{stroke:var(--t2);stroke-width:1;}
+.chart .bar{transition:opacity .15s ease;}
+.chart svg.liq:hover .bar{opacity:.38;} .chart svg.liq .bar:hover{opacity:1;}
+@container (max-width:980px){ .chart text.xl.alt{display:none;} }
+.chart-foot{padding:0 18px 14px;font:400 12px/1.5 var(--sans);color:var(--t3);}
 
-  @media (max-width:640px){
-    .op-preco b{font-size:1.7rem;}
-    .op-trio>div{padding:.65rem .8rem;}
-    .op-trio b{font-size:.95rem;}
-  }
+/* ranking */
+.tbl-wrap{overflow-x:auto;}
+.dx table.rk{width:100%;border-collapse:collapse;font:400 13px/1.2 var(--sans);}
+.dx .rk th{font:500 10.5px/1.2 var(--sans);letter-spacing:.07em;text-transform:uppercase;color:var(--t3);
+  text-align:right;padding:11px 14px;border-bottom:1px solid var(--ln);white-space:nowrap;background:var(--s1);}
+.dx .rk th:first-child,.dx .rk td:first-child{text-align:left;position:sticky;left:0;background:var(--s1);z-index:1;}
+.dx .rk td{padding:12px 14px;text-align:right;border-bottom:1px solid var(--ln);white-space:nowrap;
+  font-variant-numeric:tabular-nums;color:var(--t1);}
+.dx .rk tr:last-child td{border-bottom:none;}
+.dx .rk tbody tr:hover td{background:var(--s2);}
+.dx .rk td.tk{font-family:var(--mono);font-weight:600;font-variant-ligatures:none;}
+.dx .rk td.mut{color:var(--t2);}
+.dx .rk .rank{display:inline-grid;place-items:center;width:19px;height:19px;border-radius:5px;margin-right:10px;
+  background:var(--s3);color:var(--t2);font:600 10.5px/1 var(--sans);vertical-align:1px;}
+.dx .call .rk tr.top .rank{background:var(--call);color:#05070C;} .dx .put .rk tr.top .rank{background:var(--put);color:#05070C;}
+.vb{display:inline-flex;align-items:center;justify-content:flex-end;gap:9px;}
+.vb i{display:block;height:4px;border-radius:2px;min-width:3px;}
+.call .vb i{background:var(--call);} .put .vb i{background:var(--put);}
+.dx .rk .chg{font-weight:500;}
+
+/* funil */
+.funil{display:flex;overflow-x:auto;padding:16px 8px 18px;}
+.fs{flex:1 1 0;min-width:136px;padding:0 16px;border-left:1px solid var(--ln);}
+.fs:first-child{border-left:none;}
+.fs span{display:block;font:400 12px/1.35 var(--sans);color:var(--t3);min-height:2.7em;}
+.fs b{display:block;font:600 19px/1 var(--sans);margin:7px 0 10px;}
+.fs .fb{height:3px;border-radius:2px;background:var(--s3);}
+.fs .fb i{display:block;height:100%;border-radius:2px;background:var(--seq);}
+.note{display:flex;gap:10px;align-items:flex-start;font:400 12.5px/1.6 var(--sans);color:var(--t3);
+  padding:13px 18px;border-top:1px solid var(--ln);}
+.note svg.ic{margin-top:3px;color:var(--t2);}
+.note b{color:var(--t2);font-weight:500;}
+
+/* estados vazios e rodapé */
+.empty-st{background:var(--s1);border:1px solid var(--ln);border-radius:var(--r);padding:28px 30px;margin-top:14px;}
+.empty-st .t{display:flex;align-items:center;gap:10px;font:600 16px/1.3 var(--sans);}
+.empty-st .t svg.ic{width:18px;height:18px;color:var(--t2);}
+.dx .empty-st p{font:400 13.5px/1.6 var(--sans);color:var(--t2);margin:10px 0 0;max-width:72ch;}
+.dx .empty-st ul{margin:12px 0 0;padding-left:18px;color:var(--t2);font:400 13px/1.7 var(--sans);}
+.foot{display:flex;justify-content:space-between;gap:10px 24px;flex-wrap:wrap;margin-top:26px;padding-top:14px;
+  border-top:1px solid var(--ln);font:400 12px/1.6 var(--sans);color:var(--t3);}
+/* abas */
+[data-testid="stTabs"] [role="tablist"]{gap:4px;}
+[data-testid="stTabs"] [role="tab"]{height:auto;padding:9px 14px 11px;}
+[data-testid="stTabs"] [role="tab"] p{font:600 13.5px/1 var(--sans)!important;color:var(--t3);transition:color .15s ease;}
+[data-testid="stTabs"] [role="tab"]:hover p{color:var(--t2);}
+[data-testid="stTabs"] [role="tab"][aria-selected="true"] p{color:var(--t1);}
+[data-testid="stTabs"] [data-baseweb="tab-highlight"]{background:var(--t1);height:2px;}
+[data-testid="stTabs"] [data-baseweb="tab-border"]{background:var(--ln);}
+
+/* tela estreita (aba Opções) */
+.card-h{flex-wrap:wrap;}
+.card-h .t{white-space:nowrap;}
+@container (max-width:560px){
+  .sig-grid{grid-template-columns:repeat(2,minmax(0,1fr));}
+  .sig-grid>div{padding:11px 14px 12px 18px;}
+  .sig-grid>div:nth-child(3n){border-right:1px solid var(--ln);}
+  .sig-grid>div:nth-child(2n){border-right:none;}
+  .sig-grid>div:nth-last-child(-n+3){border-bottom:1px solid var(--ln);}
+  .sig-grid>div:nth-last-child(-n+2){border-bottom:none;}
+  .legend{justify-content:flex-start;}
+  .card-h .d{text-align:left;}
+}
+
+/* aba Correlações */
+.stline{display:flex;align-items:center;gap:7px;min-height:40px;font:400 12.5px/1.3 var(--sans);color:var(--t3);}
+.stline b{color:var(--t1);font-weight:500;}
+.pulse{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;margin:6px 0 14px;}
+@container (max-width:1300px){ .pulse{grid-template-columns:repeat(3,minmax(0,1fr));} }
+@container (max-width:560px){
+  .pulse{grid-template-columns:repeat(2,minmax(0,1fr));}
+  .pz .l .sub{display:none;}
+  .pz .d{flex-wrap:wrap;gap:2px 8px;}
+}
+.pz{padding-bottom:8px;}
+.pz .l{color:var(--t2);gap:5px;}
+.pz .l .sub{font-weight:400;letter-spacing:0;text-transform:none;color:var(--t3);white-space:nowrap;}
+.pz .l .sub::before{content:"· ";}
+.pz .d{display:flex;align-items:center;gap:8px;}
+.pz .d .q{color:var(--t3);font-size:12px;overflow:hidden;text-overflow:ellipsis;}
+.spk{display:block;width:100%;height:34px;margin-top:10px;overflow:visible;}
+.spk polyline{fill:none;stroke-width:1.5;stroke-linejoin:round;stroke-linecap:round;vector-effect:non-scaling-stroke;}
+.spk polyline.up{stroke:var(--up);} .spk polyline.down{stroke:var(--down);} .spk polyline.flat{stroke:var(--t3);}
+.spk line{stroke:var(--t3);stroke-width:1;stroke-dasharray:2 3;opacity:.7;vector-effect:non-scaling-stroke;}
+.spk-na{color:var(--t3);}
+.fase{display:inline-block;font:600 9.5px/1 var(--sans);letter-spacing:.07em;text-transform:uppercase;
+  padding:3px 5px;border-radius:4px;border:1px solid var(--ln2);color:var(--t2);margin-right:6px;vertical-align:1px;}
+.sec{display:flex;justify-content:space-between;align-items:baseline;gap:6px 16px;flex-wrap:wrap;margin:24px 2px 10px;}
+.sec .t{font:600 14px/1.2 var(--sans);color:var(--t1);}
+.sec .d{font:400 12px/1.4 var(--sans);color:var(--t3);}
+.mk-grid{display:grid;gap:14px;grid-template-columns:repeat(2,minmax(0,1fr));}
+@container (min-width:1700px){ .mk-grid{grid-template-columns:repeat(3,minmax(0,1fr));} }
+@container (max-width:860px){ .mk-grid{grid-template-columns:minmax(0,1fr);} }
+.mk{container-type:inline-size;}
+.dx table.qt td{padding:9px 14px;}
+.dx .qt td.nm{min-width:150px;}
+.qt .nm b{display:block;font:500 13px/1.25 var(--sans);color:var(--t1);}
+.qt .nm small{display:block;font:400 11px/1.3 var(--sans);color:var(--t3);margin-top:2px;}
+.qt .nm small .mono{font-size:10.5px;}
+.dx .qt td.hr{color:var(--t2);font-size:12px;}
+.dx .qt td.hr.old{color:var(--t3);}
+.qt .spk{display:inline-block;width:92px;height:24px;margin:0;vertical-align:middle;}
+.dv{position:relative;display:inline-block;width:44px;height:6px;margin-right:10px;vertical-align:middle;}
+.dv::before{content:"";position:absolute;left:50%;top:-3px;bottom:-3px;width:1px;background:var(--ln2);}
+.dv i{position:absolute;top:1px;height:4px;border-radius:2px;}
+.dv i.up{background:var(--up);} .dv i.down{background:var(--down);}
+@container (max-width:520px){
+  .qt .c-sp{display:none;} .dv{display:none;}
+  .dx table.qt th,.dx table.qt td{padding-left:9px;padding-right:9px;}
+  .dx .qt td.nm{min-width:0;white-space:normal;}
+}
+.hm-wrap{overflow-x:auto;padding:8px 10px 0;}
+.dx table.hm{width:100%;border-collapse:separate;border-spacing:3px;font:400 12.5px/1 var(--sans);}
+.dx .hm th{font:500 10.5px/1.25 var(--sans);letter-spacing:.05em;text-transform:uppercase;color:var(--t3);
+  padding:6px 4px 8px;text-align:center;white-space:nowrap;vertical-align:bottom;border:none;background:none;}
+.dx .hm th.lt,.dx .hm td.lt{text-align:left;padding-left:16px;width:220px;}
+.dx .hm td{border:none;}
+.dx .hm td.ak{font:600 13px/1 var(--mono);font-variant-ligatures:none;color:var(--t1);padding:0 12px 0 6px;
+  white-space:nowrap;position:sticky;left:0;background:var(--s1);z-index:1;}
+.dx .hm td.c{min-width:60px;height:36px;padding:0 6px;text-align:center;border-radius:5px;color:var(--t1);
+  font-weight:600;font-variant-numeric:tabular-nums;}
+.dx .hm td.c.fraco{color:var(--t2);font-weight:500;}
+.dx .hm td.c.na{color:var(--t3);background:var(--s2);font-weight:400;}
+.dx .hm td.lt{white-space:nowrap;font-size:12.5px;color:var(--t2);}
+.hm .mv{display:flex;align-items:center;gap:8px;line-height:1.5;}
+.hm .mv b{color:var(--t1);font-weight:500;}
+.hm .mv em{font-style:normal;color:var(--t3);font-variant-numeric:tabular-nums;}
+.hm-leg{display:flex;align-items:center;flex-wrap:wrap;gap:8px 12px;padding:12px 18px 14px;
+  font:400 11.5px/1 var(--sans);color:var(--t3);}
+.hm-leg .grad{width:160px;height:8px;border-radius:4px;
+  background:linear-gradient(90deg,var(--c-neg),var(--c-mid) 50%,var(--c-pos));}
+@media (prefers-reduced-motion:reduce){ .chart .bar{transition:none;} }
 </style>
-"""
+""".replace("__FONTES__", _FONTES)
+
+# Ícones em SVG, no traço do Lucide — nada de emoji como ícone.
+_ICONES = {
+    "marca": '<path d="M9 5v4"/><rect x="7" y="9" width="4" height="6" rx="1"/><path d="M9 15v4"/>'
+             '<path d="M16 3v3"/><rect x="14" y="6" width="4" height="8" rx="1"/><path d="M16 14v5"/>',
+    "ativo": '<polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/>',
+    "calendario": '<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4"/><path d="M8 2v4"/>'
+                  '<path d="M3 10h18"/>',
+    "vol": '<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>',
+    "camadas": '<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/>'
+               '<polyline points="2 12 12 17 22 12"/>',
+    "relogio": '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+    "info": '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
+    "filtro": '<polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>',
+    "barras": '<path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/>',
+    "fonte": '<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/>'
+             '<path d="M3 12a9 3 0 0 0 18 0"/>',
+    "alerta": '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/>'
+              '<path d="M12 9v4"/><path d="M12 17h.01"/>',
+    "lista": '<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/>'
+             '<path d="M3 12h.01"/><path d="M3 18h.01"/>',
+    "balanca": '<path d="M12 3v18"/><path d="M7 21h10"/><path d="M3 7h2c2 0 5-1 7-2 2 1 5 2 7 2h2"/>'
+               '<path d="m2 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"/>'
+               '<path d="m16 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"/>',
+    "globo": '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/>'
+             '<path d="M2 12h20"/>',
+    "predio": '<path d="M3 22h18"/><path d="M6 18v-7"/><path d="M10 18v-7"/><path d="M14 18v-7"/>'
+              '<path d="M18 18v-7"/><path d="M12 2 20 7H4z"/>',
+    "chama": '<path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.07-2.14-.22-4.05 2-6 .5 2.5 2 4.9 4 '
+             '6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.15.43-2.29 1-3a2.5 2.5 0 0 0 2.5 2.5z"/>',
+    "gema": '<path d="M6 3h12l4 6-10 13L2 9Z"/><path d="M11 3 8 9l4 13 4-13-3-6"/><path d="M2 9h20"/>',
+    "moeda": '<rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2"/>'
+             '<path d="M6 12h.01"/><path d="M18 12h.01"/>',
+    "folha": '<path d="M7 20h10"/><path d="M10 20c5.5-2.5.8-6.4 3-10"/><path d="M9.5 9.4c1.1.8 1.8 2.2 2.3 '
+             '3.7-2 .4-3.5.4-4.8-.3-1.2-.6-2.3-1.9-3-4.2 2.8-.5 4.4 0 5.5.8z"/><path d="M14.1 6a7 7 0 0 '
+             '0-1.1 4c1.9-.1 3.3-.6 4.3-1.4 1-1 1.6-2.3 1.7-4.6-2.7.1-4 1-4.9 2z"/>',
+    "grade": '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/>'
+             '<path d="M9 3v18"/><path d="M15 3v18"/>',
+    "sobe": '<path d="m18 15-6-6-6 6"/>',
+    "desce": '<path d="m6 9 6 6 6-6"/>',
+}
 
 
-def _classe_var(texto: str) -> str:
-    """Classe CSS pela direção da variação, tolerando o traço de 'sem dado'."""
-    if not texto or texto == "—":
-        return "nulo"
-    return "neg" if texto.strip().startswith("-") else "pos"
+def _ic(nome: str) -> str:
+    return f'<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">{_ICONES[nome]}</svg>'
 
 
-def _cartao_sugestao(melhor: pd.Series, lado: str) -> str:
-    """Card da sugestão do dia, em HTML — controle fino que st.metric não dá."""
-    def esc(v) -> str:
-        return _escape("—" if v is None or (not isinstance(v, str) and pd.isna(v))
-                       else str(v))
+def _esc(valor) -> str:
+    if valor is None or (not isinstance(valor, str) and pd.isna(valor)):
+        return "—"
+    return _escape(str(valor))
 
-    situacao = esc(melhor.get("moneyness"))
-    var = _num(melhor["variacao"], 2, sufixo="%", sinal=True)
-    negocios = 0 if pd.isna(melhor["num_neg"]) else int(melhor["num_neg"])
-    quando = melhor.get("data_hora")
-    quando = f" · últ. neg. {esc(quando)}" if quando and pd.notna(quando) else ""
 
-    return f"""
-    <div class="op-card op-{lado}">
-      <div class="op-card-topo">
-        <div class="op-linha1">
-          <span class="op-tick">{esc(melhor['ticker'])}</span>
-          <span class="op-etiqueta {situacao.lower()}">{situacao}</span>
-        </div>
-        <div class="op-preco">
-          <b>{_moeda(melhor['ultimo'])}</b>
-          <span class="op-var {_classe_var(var)}">{var}</span>
-        </div>
-      </div>
-      <div class="op-trio">
-        <div><span>Strike</span><b>{_moeda(melhor['strike'])}</b></div>
-        <div><span>Delta</span><b>{_num(melhor['delta'], 3, sinal=True)}</b></div>
-        <div><span>Vol. fin.</span><b>{_moeda_compacta(melhor['vol_financeiro'])}</b></div>
-      </div>
-    </div>
-    <div class="op-nota">Escolhida por liquidez: {_num(negocios, 0)} negócios ·
-       Vol. Impl. {_num(melhor['vol_impl'], 1, sufixo='%')} ·
-       {esc(melhor['modelo'])}{quando}</div>
+def _html(markup: str, alvo=None) -> None:
+    """Renderiza HTML e SVG pelo markdown do Streamlit.
+
+    st.html foi descartado: a sanitização dele remove SVG, e ícones e gráfico
+    sumiam. Sem linhas em branco nem indentação, o bloco inteiro é lido como
+    HTML cru em vez de virar parágrafo ou bloco de código.
     """
+    limpo = "\n".join(linha.strip() for linha in markup.splitlines() if linha.strip())
+    (alvo or st).markdown(limpo, unsafe_allow_html=True)
 
 
-# Colunas que ganham cor por sinal, e as que não são numéricas
-_COL_SINAL = {"Var. (%)", "Delta"}
-_COL_TEXTO = {"Mod.", "A/I/OTM"}
+def _variacao(v, rotulo_na: str | None = "—") -> str:
+    """Variação com sinal e seta. Sem dado: '—', ou nada quando rotulo_na é None."""
+    if v is None or pd.isna(v):
+        return "" if rotulo_na is None else f'<span class="chg na">{rotulo_na}</span>'
+    if v > 0:
+        return f'<span class="chg up">{_ic("sobe")}{_num(v, 2, sufixo="%", sinal=True)}</span>'
+    if v < 0:
+        return f'<span class="chg down">{_ic("desce")}{_num(v, 2, sufixo="%")}</span>'
+    return f'<span class="chg na">{_num(v, 2, sufixo="%")}</span>'
 
 
-def _tabela_html(df: pd.DataFrame) -> str:
-    """Top 3 como tabela HTML: números tabulares, cor por sinal, 1ª linha destacada."""
-    tabela = tabela_exibicao(df)
-    if tabela.empty:
-        return ""
-    cabecalho = "".join(f"<th>{_escape(c)}</th>" for c in tabela.columns)
+def _cabecalho(fonte: str, coletado_em: datetime | None, ref_pregao: date | None,
+               hoje: date, demo: bool) -> str:
+    if demo:
+        cot = '<span class="pill warn"><span class="dot off"></span>Dados sintéticos · não são preços reais</span>'
+    elif ref_pregao is None:
+        cot = '<span class="pill"><span class="dot off"></span>Data das cotações indisponível</span>'
+    elif ref_pregao >= hoje:
+        cot = '<span class="pill"><span class="dot"></span>Cotações de <b>hoje</b></span>'
+    else:
+        cot = (f'<span class="pill"><span class="dot off"></span>Último pregão com negócio: '
+               f'<b>{ref_pregao:%d/%m}</b></span>')
+    hora = (f'<span class="pill">{_ic("relogio")}Atualizado às <b>{coletado_em:%H:%M}</b></span>'
+            if coletado_em else "")
+    return _moldura("A melhor call e a melhor put do dia · B3",
+                    f'<span class="pill">{_ic("fonte")}<b>{_esc(fonte)}</b></span>{cot}{hora}')
+
+
+def _moldura(subtitulo: str, pills: str) -> str:
+    """Cabeçalho comum às abas: marca à esquerda, estado da fonte à direita."""
+    return f"""
+    <div class="dx"><div class="hdr">
+      <div class="brand"><div class="mark">{_ic("marca")}</div>
+        <div><div class="t">Painel Day Trade</div>
+        <div class="s">{_esc(subtitulo)}</div></div></div>
+      <div class="status">{pills}</div>
+    </div></div>"""
+
+
+def _kpis(ativo: str, spot, venc: date, du: int, iv_atm, n_calls: int, n_puts: int,
+          total: int, vol_calls: float = 0.0, vol_puts: float = 0.0) -> str:
+    tiles = [
+        ("ativo", f"{ativo} · preço", _moeda(spot) if spot else "—",
+         "deduzido da grade de opções" if spot else "sem distância do strike na fonte"),
+        ("calendario", "Vencimento", f"{venc:%d/%m/%Y}",
+         f"{du} dias úteis · {'mensal' if eh_vencimento_mensal(venc) else 'semanal'}"),
+        ("vol", "Vol. implícita ATM", _num(iv_atm, 1, sufixo="%") if iv_atm else "—",
+         "mediana perto do dinheiro"),
+        ("camadas", "Candidatas", f"{n_calls} calls · {n_puts} puts",
+         f"de {_num(total, 0)} opções na grade"),
+        ("balanca", "Put/Call · volume", _num(vol_puts / vol_calls, 2) if vol_calls else "—",
+         f"{_moeda_compacta(vol_puts)} ÷ {_moeda_compacta(vol_calls)}"),
+    ]
+    corpo = "".join(
+        f'<div class="kpi"><div class="l">{_ic(ic)}{_esc(l)}</div>'
+        f'<div class="v">{_esc(v)}</div><div class="d">{_esc(d)}</div></div>'
+        for ic, l, v, d in tiles)
+    return f'<div class="kpis">{corpo}</div>'
+
+
+def _medidor_delta(delta, dmin: float, dmax: float) -> str:
+    lo, hi = 0.30, 0.90
+    def pos(x): return max(0.0, min(100.0, (x - lo) / (hi - lo) * 100))
+    absd = abs(delta) if delta is not None and not pd.isna(delta) else None
+    pin = f'<span class="pin" style="left:{pos(absd):.2f}%"></span>' if absd is not None else ""
+    ticks = "".join(f'<span style="left:{pos(x):.2f}%">{_num(x, 2)}</span>'
+                    for x in sorted({lo, dmin, dmax, hi}))
+    return f"""
+    <div class="meter">
+      <div class="row"><span>|Δ| <b>{_num(absd, 3) if absd is not None else "—"}</b></span>
+        <span>faixa {_num(dmin, 2)}–{_num(dmax, 2)}</span></div>
+      <div class="track"><span class="band" style="left:{pos(dmin):.2f}%;width:{pos(dmax) - pos(dmin):.2f}%"></span>{pin}</div>
+      <div class="ticks">{ticks}</div>
+    </div>"""
+
+
+def _cartao_sinal(melhor: pd.Series, lado: str, n_lado: int, dmin: float, dmax: float) -> str:
+    nome = "calls" if lado == "call" else "puts"
+    rank = (f"1º em volume financeiro entre {n_lado} {nome} elegíveis" if n_lado > 1
+            else f"única {nome[:-1]} elegível neste vencimento")
+    situacao = _esc(melhor.get("moneyness"))
+    chips = (f'<span class="chip{" strong" if situacao == "ATM" else ""}">{situacao}</span>'
+             f'<span class="chip">{_esc(melhor.get("modelo"))}</span>')
+    neg = melhor.get("num_neg")
+    data_neg = melhor.get("data_neg")
+    data_txt = f"{data_neg:%d/%m}" if isinstance(data_neg, date) else "—"
+    return f"""
+    <div class="card sig {lado}">
+      <div class="sig-top"><span class="side"><i></i>Melhor {lado}</span><div class="chips">{chips}</div></div>
+      <div class="sig-main">
+        <div class="sig-tick">{_esc(melhor["ticker"])}</div>
+        <div class="sig-rank">{rank}</div>
+        <div class="sig-price"><span class="p"><small>R$</small>{_num(melhor["ultimo"], 2)}</span>
+          {_variacao(melhor.get("variacao"), None)}</div>
+      </div>
+      <div class="sig-grid">
+        <div><span>Strike</span><b>{_moeda(melhor["strike"])}</b></div>
+        <div><span>Delta</span><b>{_num(melhor["delta"], 3, sinal=True)}</b></div>
+        <div><span>Vol. impl.</span><b>{_num(melhor.get("vol_impl"), 1, sufixo="%")}</b></div>
+        <div><span>Negócios</span><b>{_num(neg, 0) if neg is not None and not pd.isna(neg) else "—"}</b></div>
+        <div><span>Vol. financeiro</span><b>{_moeda_compacta(melhor["vol_financeiro"])}</b></div>
+        <div><span>Último negócio</span><b>{data_txt}</b></div>
+      </div>
+      {_medidor_delta(melhor["delta"], dmin, dmax)}
+    </div>"""
+
+
+def _cartao_vazio(lado: str, mensagem: str) -> str:
+    return f"""
+    <div class="card sig {lado} empty">
+      <div class="sig-top"><span class="side"><i></i>Melhor {lado}</span></div>
+      <div class="sig-main"><div class="msg">{_esc(mensagem)}</div></div>
+    </div>"""
+
+
+def _grafico_liquidez(grade: pd.DataFrame, elegiveis: set, spot,
+                      picks: dict, janela: float = 0.10) -> str:
+    """Liquidez por strike, espelhada: calls para cima, puts para baixo, em SVG.
+
+    Forma de ênfase (skill dataviz): só os strikes que passaram em todos os
+    filtros ganham a cor do lado; o resto fica cinza. x em porcentagem para o
+    gráfico acompanhar a largura sem escalar o texto.
+    """
+    base = grade[grade["vol_financeiro"].fillna(0) > 0].copy()
+    if spot:
+        base = base[(base["strike"] >= spot * (1 - janela)) & (base["strike"] <= spot * (1 + janela))]
+    cabeca = f"""
+    <div class="card-h"><div class="t">{_ic("barras")}Liquidez por strike</div>
+      <div class="legend"><span><i style="background:var(--call)"></i>Calls elegíveis</span>
+        <span><i style="background:var(--put)"></i>Puts elegíveis</span>
+        <span><i style="background:var(--gray-mark)"></i>Fora dos filtros</span>
+        <span><i class="rule"></i>Preço do ativo</span></div></div>"""
+    if base.empty:
+        return (f'<div class="card">{cabeca}<div class="chart-foot" style="padding-top:18px">'
+                f"Sem volume negociado perto do preço do ativo neste vencimento.</div></div>")
+
+    lados = {}
+    for tipo in ("CALL", "PUT"):
+        parte = base[base["tipo"] == tipo]
+        agg = {}
+        for _, r in parte.iterrows():
+            k = round(float(r["strike"]), 2)
+            item = agg.setdefault(k, {"vol": 0.0, "neg": 0, "top": None, "top_vol": -1.0, "eleg": False})
+            vol = float(r["vol_financeiro"] or 0)
+            item["vol"] += vol
+            item["neg"] += 0 if pd.isna(r["num_neg"]) else int(r["num_neg"])
+            item["eleg"] = item["eleg"] or r["ticker"] in elegiveis
+            if vol > item["top_vol"]:
+                item["top_vol"], item["top"] = vol, r
+        lados[tipo] = agg
+
+    strikes = sorted(set(lados["CALL"]) | set(lados["PUT"]))
+    n = len(strikes)
+    vmax = max([v["vol"] for d in lados.values() for v in d.values()] or [1.0]) or 1.0
+    H, TOP, BOT = 300, 26, 34
+    meio = TOP + (H - TOP - BOT) / 2
+    meia = (H - TOP - BOT) / 2 - 6
+    fatia = 100 / n
+    frac = 0.62 if n >= 36 else (0.5 if n >= 20 else 0.36)
+    larg = fatia * frac
+
+    def barra(i, item, tipo):
+        h = max(1.5, item["vol"] / vmax * meia)
+        x = (i + 0.5) * fatia - larg / 2
+        cor = ("var(--call)" if tipo == "CALL" else "var(--put)") if item["eleg"] else "var(--gray-mark)"
+        r = item["top"]
+        dica = (f'{r["ticker"]} · {tipo.lower()} · strike {_moeda(r["strike"])} · '
+                f'{_moeda_compacta(item["vol"])} · {item["neg"]} negócios · Δ {_num(r["delta"], 3, sinal=True)}'
+                + ("" if item["eleg"] else " · fora dos filtros"))
+        raio = min(4.0, h)
+        if tipo == "CALL":
+            y = meio - h
+            capa = f'<rect x="{x:.3f}%" y="{meio - raio:.2f}" width="{larg:.3f}%" height="{raio:.2f}" fill="{cor}"/>'
+        else:
+            y = meio
+            capa = f'<rect x="{x:.3f}%" y="{meio:.2f}" width="{larg:.3f}%" height="{raio:.2f}" fill="{cor}"/>'
+        return (f'<g class="bar"><title>{_escape(dica)}</title>'
+                f'<rect x="{x:.3f}%" y="{y:.2f}" width="{larg:.3f}%" height="{h:.2f}" rx="{raio:.2f}" fill="{cor}"/>'
+                f"{capa}</g>")
+
+    barras, rotulos = [], []
+    passo = max(1, -(-n // 16))
+    for i, k in enumerate(strikes):
+        for tipo in ("CALL", "PUT"):
+            if k in lados[tipo]:
+                barras.append(barra(i, lados[tipo][k], tipo))
+        if i % passo == 0:
+            alt = " alt" if (i // passo) % 2 else ""
+            rotulos.append(f'<text class="xl{alt}" x="{(i + 0.5) * fatia:.3f}%" y="{H - 10}" '
+                           f'text-anchor="middle">{_num(k, 2)}</text>')
+
+    marcas = []
+    for tipo, tk in picks.items():
+        for i, k in enumerate(strikes):
+            item = lados[tipo].get(k)
+            if item and item["top"] is not None and item["top"]["ticker"] == tk:
+                h = max(1.5, item["vol"] / vmax * meia)
+                y = meio - h - 7 if tipo == "CALL" else meio + h + 15
+                marcas.append(f'<text class="pk" x="{(i + 0.5) * fatia:.3f}%" y="{y:.2f}" '
+                              f'text-anchor="middle">{_escape(tk)}</text>')
+
+    spot_svg = ""
+    if spot and n > 1 and strikes[0] <= spot <= strikes[-1]:
+        j = max(i for i, k in enumerate(strikes) if k <= spot)
+        frac_s = 0.0 if j == n - 1 else (spot - strikes[j]) / (strikes[j + 1] - strikes[j])
+        xs = (j + 0.5 + frac_s) * fatia
+        spot_svg = (f'<line class="spot" x1="{xs:.3f}%" x2="{xs:.3f}%" y1="{TOP - 8}" y2="{H - BOT}"/>'
+                    f'<text class="sp" x="{xs:.3f}%" y="{TOP - 12}" text-anchor="middle">'
+                    f"ativo {_num(spot, 2)}</text>")
+
+    grades = "".join(f'<line class="grid" x1="0%" x2="100%" y1="{meio + s * meia * f:.2f}" '
+                     f'y2="{meio + s * meia * f:.2f}"/>' for f in (0.5, 1.0) for s in (-1, 1))
+    eixo_y = "".join(
+        f'<text x="58" y="{meio + s * meia * f + 4:.2f}" text-anchor="end">{_moeda_compacta(vmax * f)}</text>'
+        for f in (0.5, 1.0) for s in (-1, 1))
+    eixo_y += (f'<text class="side-l" x="4" y="{meio - 7:.2f}">calls</text>'
+               f'<text class="side-l" x="4" y="{meio + 16:.2f}">puts</text>')
+    resumo = (f"Volume financeiro por strike, {n} strikes perto do preço do ativo; "
+              f"calls acima da linha de base e puts abaixo.")
+    return f"""
+    <div class="card">{cabeca}
+      <div class="chart-wrap"><div class="chart" role="img" aria-label="{_escape(resumo)}">
+        <div class="yax"><svg width="64" height="{H}">{eixo_y}</svg></div>
+        <div class="plot"><svg class="liq" width="100%" height="{H}">{grades}
+          <line class="base" x1="0%" x2="100%" y1="{meio:.2f}" y2="{meio:.2f}"/>
+          {"".join(barras)}{spot_svg}{"".join(marcas)}{"".join(rotulos)}</svg></div>
+      </div></div>
+      <div class="chart-foot">Janela de ±{int(janela * 100)}% em torno do preço do ativo. Passe o mouse
+        numa barra para ver ticker, volume, negócios e delta.</div>
+    </div>"""
+
+
+def _tabela_ranking(df_lado: pd.DataFrame, lado: str, n_total: int) -> str:
+    nome = "Calls" if lado == "call" else "Puts"
+    topo = df_lado.head(TOP_N)
+    cab = (f'<div class="card-h"><div class="t">{_ic("lista")}Ranking de {nome.lower()}</div>'
+           f'<div class="d">top {len(topo)} de {n_total} elegíveis, por volume financeiro</div></div>')
+    if topo.empty:
+        return (f'<div class="card {lado}">{cab}<div class="chart-foot" style="padding-top:16px">'
+                f"Nenhuma {nome.lower()[:-1]} passou nos filtros.</div></div>")
+    vmax = float(topo["vol_financeiro"].max() or 1)
     linhas = []
-    for i, (_, linha) in enumerate(tabela.iterrows()):
-        celulas = []
-        for coluna, valor in linha.items():
-            texto = _escape(str(valor))
-            if coluna == "Ticker":
-                classe = "tick"
-            elif coluna in _COL_TEXTO:
-                classe = "txt"
-            elif coluna in _COL_SINAL:
-                classe = _classe_var(str(valor)).replace("nulo", "")
-            else:
-                classe = ""
-            celulas.append(f'<td class="{classe}">{texto}</td>')
-        marca = ' class="destaque"' if i == 0 else ""
-        linhas.append(f"<tr{marca}>{''.join(celulas)}</tr>")
-    return (f'<div class="op-tab-wrap"><table class="op-tab">'
-            f"<thead><tr>{cabecalho}</tr></thead>"
-            f"<tbody>{''.join(linhas)}</tbody></table></div>")
+    for i, (_, r) in enumerate(topo.iterrows()):
+        largura = max(3, int(56 * float(r["vol_financeiro"] or 0) / vmax))
+        neg = "—" if pd.isna(r["num_neg"]) else _num(r["num_neg"], 0)
+        linhas.append(
+            f'<tr class="{"top" if i == 0 else ""}">'
+            f'<td class="tk"><span class="rank">{i + 1}</span>{_esc(r["ticker"])}</td>'
+            f'<td class="mut">{_esc(r["modelo"])}</td>'
+            f'<td>{_num(r["strike"], 2)}</td>'
+            f'<td class="mut">{_esc(r["moneyness"])}</td>'
+            f'<td>{_num(r["ultimo"], 2)}</td>'
+            f'<td>{_variacao(r["variacao"], "—")}</td>'
+            f"<td>{neg}</td>"
+            f'<td><span class="vb"><i style="width:{largura}px"></i>{_moeda_compacta(r["vol_financeiro"])}</span></td>'
+            f'<td>{_num(r["vol_impl"], 1, sufixo="%")}</td>'
+            f'<td>{_num(r["delta"], 3, sinal=True)}</td></tr>')
+    colunas = ("Ticker", "Mod.", "Strike", "A/I/OTM", "Últ. (R$)", "Var. (%)", "Núm. de Neg.",
+               "Volume Financeiro", "Vol. Impl.", "Delta")
+    th = "".join(f"<th>{c}</th>" for c in colunas)
+    return (f'<div class="card {lado}">{cab}<div class="tbl-wrap"><table class="rk">'
+            f'<thead><tr>{th}</tr></thead><tbody>{"".join(linhas)}</tbody></table></div></div>')
 
 
-def _painel_lado(titulo: str, lado: str, df_lado: pd.DataFrame, vazio: str) -> None:
-    """Renderiza uma coluna (Calls ou Puts): card da sugestão + top 3."""
-    cor = "var(--call)" if lado == "call" else "var(--put)"
-    st.markdown(
-        f'<div style="display:flex;align-items:center;gap:.5rem;margin:.2rem 0 .7rem">'
-        f'<span style="width:9px;height:9px;border-radius:50%;background:{cor}"></span>'
-        f'<span style="font-size:.72rem;font-weight:700;letter-spacing:.13em">{titulo}</span>'
-        f"</div>",
-        unsafe_allow_html=True,
-    )
-    if df_lado.empty:
-        st.warning(vazio, icon="⚠️")
-        return
-
-    st.markdown(_cartao_sugestao(df_lado.iloc[0], lado), unsafe_allow_html=True)
-    st.markdown(_tabela_html(df_lado.head(TOP_N)), unsafe_allow_html=True)
+def _funil(funil: list[tuple[str, int]], nota: str) -> str:
+    total = max(1, funil[0][1]) if funil else 1
+    passos = "".join(
+        f'<div class="fs"><span>{_esc(rotulo)}</span><b>{_num(n, 0)}</b>'
+        f'<div class="fb"><i style="width:{max(1.5, n / total * 100):.1f}%"></i></div></div>'
+        for rotulo, n in funil)
+    return (f'<div class="card"><div class="card-h"><div class="t">{_ic("filtro")}Como a escolha foi feita</div>'
+            f'<div class="d">cada etapa filtra a anterior; o topo da liquidez vence</div></div>'
+            f'<div class="funil">{passos}</div><div class="note">{_ic("info")}<span>{nota}</span></div></div>')
 
 
-def _tela_inicial() -> None:
-    st.info(
-        "**Como começar:** clique em **Buscar no site** na barra lateral. "
-        "Se o site bloquear a automação, exporte a grade em CSV/Excel no "
-        "opcoes.net.br e use o **upload de backup** — o painel processa igual. "
-        "Para só conferir a interface, marque **Modo demonstração**.",
-        icon="👈",
-    )
+def _estado_vazio(icone: str, titulo: str, texto: str, itens: list[str] | None = None) -> None:
+    lista = ("<ul>" + "".join(f"<li>{i}</li>" for i in itens) + "</ul>") if itens else ""
+    _html(f'<div class="dx"><div class="empty-st"><div class="t">{_ic(icone)}{_esc(titulo)}</div>'
+          f"<p>{texto}</p>{lista}</div></div>")
+
+
+def _rodape(fonte: str = "Dados do opcoes.net.br podem ter atraso — confirme preço e liquidez "
+                         "no home broker antes de operar.") -> None:
+    _html('<div class="dx"><div class="foot"><span>Ferramenta de apoio à decisão para uso próprio. '
+          f"Não constitui recomendação de investimento.</span><span>{_esc(fonte)}</span></div></div>")
+
+
+def _sb(titulo: str, primeiro: bool = False) -> None:
+    st.markdown(f'<div class="sb{" first" if primeiro else ""}">{_escape(titulo)}</div>',
+                unsafe_allow_html=True)
+
+
+def _grade_numerica(grade: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """Grade completa com números de verdade (ordenável), formatada pelo idioma do navegador."""
+    g = pd.DataFrame({
+        "Ticker": grade["ticker"], "Tipo": grade["tipo"], "Mod.": grade["modelo"],
+        "Strike": grade["strike"], "A/I/OTM": grade["moneyness"], "Últ. (R$)": grade["ultimo"],
+        "Var. (%)": grade["variacao"], "Núm. de Neg.": grade["num_neg"],
+        "Volume Financeiro": grade["vol_financeiro"], "Vol. Impl. (%)": grade["vol_impl"],
+        "Delta": grade["delta"],
+        "Últ. negócio": grade["data_neg"] if "data_neg" in grade.columns else None,
+    })
+    num = st.column_config.NumberColumn
+    cfg = {c: num(format="localized") for c in
+           ("Strike", "Últ. (R$)", "Var. (%)", "Núm. de Neg.", "Volume Financeiro", "Vol. Impl. (%)", "Delta")}
+    return g, cfg
+
+
+# ---------------- Aba Correlações ---------------------------------------------
+
+_ICONE_GRUPO = {"eua": "ativo", "brny": "predio", "europa": "globo", "asia": "globo",
+                "energia": "chama", "metais": "gema", "cambio": "moeda", "agro": "folha"}
+
+
+def _casas(c: dict) -> int:
+    """Casas decimais do Yahoo (priceHint), entre 2 e 4."""
+    return min(4, max(2, int(c.get("casas") or 2)))
+
+
+def _hora_cotacao(ts: int, agora: datetime) -> tuple[str, bool]:
+    """Hora do último preço em Brasília ('08:21', ou '11/09' se não foi hoje) e se está parado."""
+    if not ts:
+        return "—", True
+    quando = datetime.fromtimestamp(ts, BRT)
+    parado = (agora - quando).total_seconds() > 30 * 60
+    return (f"{quando:%H:%M}" if quando.date() == agora.date() else f"{quando:%d/%m}"), parado
+
+
+def _sparkline(pontos: list, ref) -> str:
+    """Curva da sessão, com o fechamento anterior tracejado e a cor do sinal da variação.
+
+    O domínio vertical inclui a referência: o salto entre ela e o começo da
+    curva mostra o que andou antes da primeira barra do dia.
+    """
+    if len(pontos) < 2:
+        return '<span class="spk-na">—</span>'
+    amostra = pontos[::max(1, -(-len(pontos) // 120))]
+    if amostra[-1] != pontos[-1]:
+        amostra.append(pontos[-1])
+    t0, t1 = amostra[0][0], amostra[-1][0]
+    valores = [v for _, v in amostra] + ([ref] if ref else [])
+    lo, hi = min(valores), max(valores)
+    if hi - lo < 1e-12:
+        lo, hi = lo - 1, hi + 1
+    def y(v): return 2 + (hi - v) / (hi - lo) * 26
+    def x(t): return (t - t0) / max(1, t1 - t0) * 100
+    ult = amostra[-1][1]
+    cor = "up" if ref and ult > ref else ("down" if ref and ult < ref else "flat")
+    tracejado = f'<line x1="0" x2="100" y1="{y(ref):.2f}" y2="{y(ref):.2f}"/>' if ref else ""
+    pts = " ".join(f"{x(t):.2f},{y(v):.2f}" for t, v in amostra)
+    return (f'<svg class="spk" viewBox="0 0 100 30" preserveAspectRatio="none" aria-hidden="true">'
+            f'{tracejado}<polyline class="{cor}" points="{pts}"/></svg>')
+
+
+def _barra_div(v, escala: float) -> str:
+    """Barra que sai do zero para a direita (alta) ou a esquerda (queda), na mesma escala para todos."""
+    if v is None or pd.isna(v) or v == 0:
+        return '<span class="dv"></span>'
+    largura = max(4.0, min(50.0, abs(v) / escala * 50))
+    esquerda = 50.0 if v > 0 else 50.0 - largura
+    return (f'<span class="dv"><i class="{"up" if v > 0 else "down"}" '
+            f'style="left:{esquerda:.1f}%;width:{largura:.1f}%"></i></span>')
+
+
+def _pulso(cot: dict, agora: datetime) -> str:
+    """Faixa de abertura: os seis mercados que mais pesam na B3, com a curva da sessão."""
+    tiles = []
+    for s in PULSO:
+        nome, det = NOMES.get(s, (s, ""))
+        rotulo = f'<div class="l">{_esc(nome)}<span class="sub">{_esc(det)}</span></div>'
+        c = cot.get(s)
+        if not c:
+            tiles.append(f'<div class="kpi pz">{rotulo}<div class="v">—</div>'
+                         f'<div class="d">sem cotação agora</div></div>')
+            continue
+        casas = _casas(c)
+        hora, _ = _hora_cotacao(c["hora"], agora)
+        fase = f'<span class="fase">{c["fase"]}</span>' if c["fase"] != "regular" else ""
+        tiles.append(
+            f'<div class="kpi pz">{rotulo}<div class="v">{_num(c["ultimo"], casas)}</div>'
+            f'<div class="d">{_variacao(c["var_pct"])}<span class="q">{fase}'
+            f'{_num(c["var"], casas, sinal=True)} · {hora}</span></div>'
+            f'{_sparkline(c["pontos"], c["ref"])}</div>')
+    return f'<div class="pulse">{"".join(tiles)}</div>'
+
+
+def _quadro_grupo(chave: str, titulo: str, desc: str, itens: list, cot: dict,
+                  escala: float, agora: datetime) -> str:
+    """Tabela de um grupo de mercados: último, variação, curva da sessão e hora."""
+    linhas = []
+    for s, nome, det in itens:
+        rotulo = (f'<td class="nm"><b>{_esc(nome)}</b><small>{_esc(det)} · '
+                  f'<span class="mono">{_esc(s)}</span></small></td>')
+        c = cot.get(s)
+        if not c:
+            linhas.append(f'<tr>{rotulo}<td colspan="4" class="mut">sem cotação agora</td></tr>')
+            continue
+        casas = _casas(c)
+        hora, parado = _hora_cotacao(c["hora"], agora)
+        fase = f'<span class="fase">{c["fase"]}</span>' if c["fase"] != "regular" else ""
+        dica = (f"{nome}: {_num(c['var'], casas, sinal=True)} desde o fechamento anterior "
+                f"({_num(c['ref'], casas)})")
+        linhas.append(
+            f'<tr title="{_escape(dica)}">{rotulo}<td>{_num(c["ultimo"], casas)}</td>'
+            f'<td>{_barra_div(c["var_pct"], escala)}{_variacao(c["var_pct"])}</td>'
+            f'<td class="c-sp">{_sparkline(c["pontos"], c["ref"])}</td>'
+            f'<td class="hr{" old" if parado else ""}">{fase}{hora}</td></tr>')
+    th = '<th>Mercado</th><th>Último</th><th>Var. %</th><th class="c-sp">Sessão</th><th>Hora</th>'
+    return (f'<div class="card mk"><div class="card-h"><div class="t">{_ic(_ICONE_GRUPO.get(chave, "globo"))}'
+            f'{_esc(titulo)}</div><div class="d">{_esc(desc)}</div></div>'
+            f'<div class="tbl-wrap"><table class="rk qt"><thead><tr>{th}</tr></thead>'
+            f'<tbody>{"".join(linhas)}</tbody></table></div></div>')
+
+
+def _mapa_correlacao(corr: pd.DataFrame, nobs: pd.DataFrame, cot: dict, janela: int) -> str:
+    """Matriz ativo da B3 × mercado em cor divergente, com o número escrito em cada célula.
+
+    Azul move junto, vermelho move ao contrário, e o cinza do meio é "sem
+    relação"; a intensidade acompanha |ρ|, com um teto de mistura que mantém o
+    texto claro legível. A última coluna traz os dois mercados mais
+    correlacionados com o ativo e quanto cada um anda agora.
+    """
+    nomes = dict(MOTORES)
+    th = "".join(f"<th>{_esc(n)}</th>" for _, n in MOTORES)
+    linhas = []
+    for ativo in ATIVOS:
+        s = B3_YAHOO[ativo]
+        serie = corr.loc[s] if s in corr.index else pd.Series(dtype=float)
+        cels = []
+        for sym, nome in MOTORES:
+            r = serie.get(sym, np.nan)
+            if pd.isna(r):
+                cels.append('<td class="c na">—</td>')
+                continue
+            base = "var(--c-pos)" if r >= 0 else "var(--c-neg)"
+            dica = f"{ativo} × {nome}: ρ {_num(r, 2, sinal=True)} em {int(nobs.loc[s, sym])} pregões"
+            cels.append(f'<td class="c{" fraco" if abs(r) < 0.2 else ""}" title="{_escape(dica)}" '
+                        f'style="background:color-mix(in oklab,{base} {6 + 66 * min(1.0, abs(r)):.0f}%,'
+                        f'var(--c-mid))">{_num(r, 2, sinal=True)}</td>')
+        fortes = serie.dropna()
+        fortes = fortes.reindex(fortes.abs().sort_values(ascending=False).index).head(2)
+        mv = "".join(
+            f'<span class="mv"><b>{_esc(nomes[sym])}</b><em>ρ {_num(r, 2, sinal=True)}</em>'
+            f'{_variacao(cot[sym]["var_pct"] if sym in cot else None)}</span>'
+            for sym, r in fortes.items())
+        linhas.append(f'<tr><td class="ak">{ativo}</td>{"".join(cels)}<td class="lt">{mv or "—"}</td></tr>')
+    cab = (f'<div class="card-h"><div class="t">{_ic("grade")}Correlação com seus ativos</div>'
+           f'<div class="d">retornos diários · últimos {janela} pregões em comum</div></div>')
+    legenda = ('<div class="hm-leg"><span>−1 · move ao contrário</span><span class="grad"></span>'
+               "<span>+1 · move junto</span></div>")
+    nota = (f'<div class="note">{_ic("info")}<span>Correlação de Pearson entre os retornos diários de cada '
+            "ativo e de cada mercado. A Ásia fecha antes da B3 abrir, então ali o número mede o quanto o "
+            "pregão asiático antecipa o nosso. Correlação passada não garante o movimento de hoje.</span></div>")
+    return (f'<div class="card">{cab}<div class="hm-wrap"><table class="hm"><thead><tr><th></th>{th}'
+            f'<th class="lt">Mais correlacionados · agora</th></tr></thead>'
+            f'<tbody>{"".join(linhas)}</tbody></table></div>{legenda}{nota}</div>')
+
+
+def _cartao_aviso(icone: str, titulo: str, texto: str) -> str:
+    return (f'<div class="card"><div class="card-h"><div class="t">{_ic(icone)}{_esc(titulo)}</div></div>'
+            f'<div class="chart-foot" style="padding-top:16px">{texto}</div></div>')
+
+
+def _carregar(fonte: str, ativo: str, arquivo, usar_selenium: bool, headless: bool,
+              hoje: date) -> tuple[dict | None, str | None]:
+    """Busca os dados conforme a fonte. Devolve (estado, erro)."""
+    if fonte == "Demo":
+        return {"df": grade_demo(ativo, hoje), "fonte": "Demonstração", "demo": True,
+                "coletado": datetime.now(), "log": ["Grade sintética gerada por Black-Scholes."]}, None
+    if fonte == "Arquivo":
+        if arquivo is None:
+            return None, None
+        try:
+            return {"df": ler_arquivo(arquivo.name, arquivo.getvalue()), "fonte": f"Arquivo · {arquivo.name}",
+                    "demo": False, "coletado": datetime.now(), "log": [f"Arquivo {arquivo.name}"]}, None
+        except Exception as exc:
+            return None, f"Não consegui ler o arquivo: {exc}"
+    try:
+        with st.spinner(f"Buscando a grade de {ativo} no opcoes.net.br…"):
+            df, rota, log, coletado = extrair_automatico(ativo, usar_selenium, headless)
+        return {"df": df, "fonte": "opcoes.net.br", "demo": False, "coletado": coletado,
+                "log": log, "rota": rota}, None
+    except Exception as exc:
+        return None, str(exc)
+
+
+# Valores de partida dos controles. Moram no session_state, e não no `value=`
+# dos widgets, para sobreviver à troca de aba (ver _manter_estado).
+_ESTADO_PADRAO: dict[str, object] = {
+    "fonte_sel": "Site", "ativo_sel": "PETR4", "somente_padrao": True,
+    "du_janela": (DU_MIN_PADRAO, DU_MAX_PADRAO), "todos_venc": False,
+    "delta_faixa": (DELTA_MIN_PADRAO, DELTA_MAX_PADRAO), "min_neg": 0, "exigir_neg": True,
+    "max_atraso": 1, "taxa_pct": 10.75, "spot_manual": 0.0, "usar_selenium": False,
+    "headless": True, "janela_corr": 60, "auto_corr": True,
+}
+
+
+def _manter_estado() -> None:
+    """Segura o valor dos controles quando a aba deles não é desenhada.
+
+    Com abas preguiçosas, o Streamlit apaga o estado de todo widget que não
+    aparece numa execução. Regravar as chaves no começo de cada execução
+    interrompe essa limpeza; por isso os widgets são criados sem `value` ou
+    `default`, que disputariam com o estado.
+    """
+    for chave, padrao in _ESTADO_PADRAO.items():
+        st.session_state[chave] = st.session_state.get(chave, padrao)
+    for chave in [k for k in st.session_state if str(k).startswith("venc_")]:
+        st.session_state[chave] = st.session_state[chave]
 
 
 def main() -> None:
-    st.set_page_config(page_title="Opções Day Trade · B3", page_icon="📈",
-                       layout="wide", initial_sidebar_state="expanded")
+    st.set_page_config(page_title="Painel Day Trade · B3", page_icon="📈", layout="wide",
+                       initial_sidebar_state="auto")
     st.markdown(_CSS, unsafe_allow_html=True)
-    hoje = date.today()
+    _manter_estado()
+    cabecalho = st.empty()
+    rotulos = [":material/candlestick_chart: Opções", ":material/public: Correlações"]
+    # ?aba=correlacoes abre direto na aba de mercados (dá para deixar nos favoritos)
+    inicial = rotulos[1] if st.query_params.get("aba") == "correlacoes" else rotulos[0]
+    aba_opcoes, aba_mercados = st.tabs(rotulos, default=inicial, key="aba", on_change="rerun")
+    # Só a aba aberta roda: quem está nas opções não espera pelas cotações
+    # globais, e vice-versa.
+    if aba_mercados.open:
+        with aba_mercados:
+            pagina_correlacoes(cabecalho)
+    else:
+        with aba_opcoes:
+            pagina_opcoes(cabecalho, date.today())
 
-    # ---------------- Sidebar: ativo e fonte de dados --------------------
+
+def pagina_opcoes(cabecalho, hoje: date) -> None:
+    # ---------------- Barra lateral: fonte e parâmetros ---------------------
     with st.sidebar:
-        st.markdown("## ⚙️ Painel de controle")
-        ativo = st.selectbox("Ativo-objeto", ATIVOS, index=ATIVOS.index("PETR4"))
-
-        st.markdown("#### 1 · Fonte dos dados")
-        col_a, col_b = st.columns([3, 2])
-        buscar = col_a.button("🔄 Buscar no site", **_LARGURA)
-        demo = col_b.checkbox("Demo", value=False,
-                              help="Grade sintética (Black-Scholes) para testar a interface.")
-        arquivo = st.file_uploader(
-            "Upload de backup — CSV/Excel exportado do opcoes.net.br",
-            type=["csv", "xlsx", "xls", "xlsm"],
-            help="Use quando o scraping for bloqueado ou exigir login.",
-        )
-        with st.expander("Ajustes avançados"):
-            taxa_pct = st.number_input(
-                "Taxa livre de risco (% a.a.)", min_value=0.0, max_value=30.0,
-                value=10.75, step=0.25,
-                help="Entra no Black-Scholes que calcula o Delta. Em opções curtas "
-                     "o efeito é pequeno; use a Selic/DI corrente.",
-            )
-            spot_manual = st.number_input(
-                "Preço do ativo (0 = deduzir do site)", min_value=0.0,
-                value=0.0, step=0.10,
-                help="O painel deduz o spot da coluna 'Distância % do Strike'. "
-                     "Preencha só para forçar outro valor.",
-            )
-            usar_selenium = st.checkbox(
-                "Tentar Selenium se o JSON falhar", value=False,
-                help="Exige Chrome e a biblioteca selenium instalados.",
-            )
-            headless = st.checkbox("Chrome em modo headless", value=True)
-            st.caption(
-                f"Ambiente: `{'WebAssembly' if NO_NAVEGADOR else 'Python local'}` · "
-                f"platform `{sys.platform}` · dados via `{URL_JSON}`"
-            )
-
-    # ---------------- Carga de dados -------------------------------------
-    estado = st.session_state.get("dados")
-
-    if buscar:
-        with st.spinner(f"Extraindo a grade de {ativo}…"):
-            try:
-                df_bruto, rota, log = extrair_automatico(ativo, usar_selenium, headless)
-                st.session_state["dados"] = {"df": df_bruto, "fonte": rota, "ativo": ativo,
-                                             "ts": datetime.now(), "log": log, "chave": None}
-            except Exception as exc:
-                st.sidebar.error(f"{exc}", icon="🚫")
-    elif demo:
-        if not estado or estado.get("fonte") != "Demo" or estado.get("ativo") != ativo:
-            st.session_state["dados"] = {"df": grade_demo(ativo, hoje), "fonte": "Demo",
-                                         "ativo": ativo, "ts": datetime.now(),
-                                         "log": ["🧪 Dados sintéticos"], "chave": None}
-    elif arquivo is not None:
-        conteudo = arquivo.getvalue()
-        chave = f"{arquivo.name}:{len(conteudo)}"
-        if not estado or estado.get("chave") != chave:
-            try:
-                st.session_state["dados"] = {
-                    "df": ler_arquivo(arquivo.name, conteudo), "fonte": f"Upload · {arquivo.name}",
-                    "ativo": ativo, "ts": datetime.now(),
-                    "log": [f"📄 {arquivo.name}"], "chave": chave,
-                }
-            except Exception as exc:
-                st.sidebar.error(f"Falha ao ler o arquivo: {exc}", icon="🚫")
-
-    estado = st.session_state.get("dados")
-
-    # ---------------- Cabeçalho ------------------------------------------
-    st.markdown(
-        f'<div class="op-titulo">📈 Opções Day Trade · B3</div>'
-        f'<div class="op-sub">Vencimento em {DU_MIN_PADRAO}–{DU_MAX_PADRAO} dias úteis · '
-        f'|Delta| entre 0,50 e 0,70 · série mensal · ordenação por liquidez</div>',
-        unsafe_allow_html=True,
-    )
-
-    if not estado:
-        _tela_inicial()
-        _rodape()
-        return
-
-    # ---------------- Preparação -----------------------------------------
-    try:
-        df = preparar_dataframe(estado["df"], spot=(spot_manual or None),
-                                hoje=hoje, taxa=taxa_pct / 100.0)
-    except Exception as exc:
-        st.error(f"Não consegui interpretar a grade recebida: {exc}", icon="🚫")
-        with st.expander("Dados brutos recebidos"):
-            st.dataframe(estado["df"].head(30), **_LARGURA)
-        _rodape()
-        return
-
-    if estado["fonte"] == "Demo":
-        st.warning("**Modo demonstração** — dados sintéticos, não são preços reais.", icon="🧪")
-
-    calculados = int(df["delta_calculado"].sum()) if "delta_calculado" in df.columns else 0
-    if calculados:
-        # Uma linha, de propósito: a caixa longa comia uma tela inteira no celular.
-        # A explicação completa mora no README.
-        st.markdown(
-            f'<div class="op-aviso">🧮 <b>Delta calculado pelo painel</b> — o site não '
-            f"fornece os gregos no plano gratuito. Vol. implícita invertida do preço, "
-            f"Delta por Black-Scholes · ativo <b>{_moeda(df.attrs.get('spot'))}</b> · "
-            f"taxa {_num(taxa_pct, 2, sufixo='%')} a.a. · {calculados} opções</div>",
-            unsafe_allow_html=True,
-        )
-
-    # ---------------- Sidebar: filtros (dependem dos dados) ---------------
-    with st.sidebar:
-        st.markdown("#### 2 · Filtros")
-
-        vencimentos = sorted({v for v in df["vencimento"].dropna().unique()})
-        if not vencimentos:
-            vencimentos = calendario_vencimentos(hoje)
-
-        somente_padrao = st.checkbox(
-            "Somente séries mensais padrão", value=True,
-            help="Aceita apenas RAIZ+LETRA+DÍGITOS (PETRI494) e descarta semanais e "
-                 "séries atípicas (PETRI483W4). Aplicado ANTES da ordenação por "
-                 "liquidez, para o topo da lista ser sempre um contrato convencional.",
-        )
-
-        du_min, du_max = st.slider("Janela de dias úteis até o vencimento", 0, 60,
-                                   (DU_MIN_PADRAO, DU_MAX_PADRAO))
-        todos = st.checkbox("Mostrar vencimentos fora da janela", value=False)
-
-        # Com a regra estrita ligada, só a 3ª sexta entra na lista.
-        candidatos = ([v for v in vencimentos if eh_vencimento_mensal(v)]
-                      if somente_padrao else vencimentos)
-        no_ciclo = [v for v in candidatos if du_min <= dias_uteis(hoje, v) <= du_max]
-
-        if no_ciclo:
-            elegiveis = no_ciclo
-        elif todos:
-            elegiveis = candidatos or vencimentos
-        else:
-            elegiveis = []
-
-        vencimento = st.selectbox(
-            "Vencimento", elegiveis, index=0 if elegiveis else None,
-            format_func=lambda v: (
-                f"{v:%d/%m/%Y} · {dias_uteis(hoje, v)} DU · "
-                f"{'MENSAL' if eh_vencimento_mensal(v) else 'semanal'}"
-            ),
-            placeholder="nenhum vencimento elegível",
-            help="Semanais têm bem menos liquidez que o mensal, mesmo caindo dentro "
-                 "da janela de dias úteis.",
-        ) if elegiveis else None
-        if vencimento is not None and not eh_vencimento_mensal(vencimento):
-            st.caption("⚠️ Vencimento semanal — confira o volume antes de operar.")
-
-        delta_min, delta_max = st.slider("Faixa de |Delta|", 0.05, 0.95,
-                                         (DELTA_MIN_PADRAO, DELTA_MAX_PADRAO), step=0.05)
-        min_negocios = st.number_input("Mínimo de negócios", min_value=0, value=0, step=50)
-        exigir_negocio = st.checkbox("Descartar opções sem negócio", value=True)
+        _sb("Fonte de dados", primeiro=True)
+        fonte = st.segmented_control("Fonte", ["Site", "Arquivo", "Demo"], required=True,
+                                     key="fonte_sel", label_visibility="collapsed") or "Site"
+        arquivo = None
+        if fonte == "Arquivo":
+            arquivo = st.file_uploader("Grade exportada do opcoes.net.br",
+                                       type=["csv", "xlsx", "xls", "xlsm"])
+        _sb("Regras")
+        somente_padrao = st.toggle(
+            "Somente séries mensais padrão", key="somente_padrao",
+            help="Aceita só RAIZ+LETRA+DÍGITOS (PETRI494) e descarta semanais e séries atípicas "
+                 "(PETRI483W4), antes da ordenação por liquidez.")
+        du_min, du_max = st.slider("Dias úteis até o vencimento", 0, 60, key="du_janela")
+        todos = st.toggle("Mostrar vencimentos fora da janela", key="todos_venc")
+        delta_min, delta_max = st.slider("Faixa de |Delta|", 0.05, 0.95, step=0.05, key="delta_faixa")
+        _sb("Liquidez")
+        min_negocios = st.number_input("Mínimo de negócios", min_value=0, step=50, key="min_neg")
+        exigir_negocio = st.toggle("Descartar opções sem negócio", key="exigir_neg")
         max_atraso = st.slider(
-            "Máx. pregões desde o último negócio", 0, 10, 1,
-            help="Opção parada há semanas guarda volume acumulado alto e subiria no "
-                 "ranking, mas o Delta sairia de um preço velho. 1 = negociada no "
-                 "pregão mais recente da grade ou no anterior.",
-        )
+            "Máx. pregões desde o último negócio", 0, 10, key="max_atraso",
+            help="Opção parada há semanas guarda volume acumulado alto e subiria no ranking, "
+                 "mas o Delta sairia de um preço velho.")
+        _sb("Modelo")
+        taxa_pct = st.number_input("Taxa livre de risco (% a.a.)", min_value=0.0, max_value=30.0,
+                                   step=0.25, key="taxa_pct",
+                                   help="Entra no Black-Scholes que calcula o Delta.")
+        spot_manual = st.number_input("Preço do ativo (0 = deduzir)", min_value=0.0, step=0.10,
+                                      key="spot_manual")
+        with st.expander("Avançado"):
+            usar_selenium = st.toggle("Tentar Selenium se o JSON falhar", key="usar_selenium")
+            headless = st.toggle("Chrome em modo headless", key="headless")
+            st.caption(f"Ambiente: {'WebAssembly' if NO_NAVEGADOR else 'Python local'} · "
+                       f"dados via {URL_JSON}")
 
-    # Janela vazia é um resultado legítimo da regra estrita, não um erro: os
-    # vencimentos mensais distam ~21 DU entre si, então na semana anterior a cada
-    # um deles nenhum cai na faixa. Só depois de montar a barra lateral
-    # inteira, para os controles continuarem disponíveis para sair da situação.
-    if not elegiveis:
-        mensais = [v for v in vencimentos if eh_vencimento_mensal(v)]
-        st.warning(
-            f"**Nenhum vencimento mensal entre {du_min} e {du_max} dias úteis.** "
-            "Os mensais da B3 (3ª sexta) ficam a ~21 DU um do outro, então há alguns "
-            "dias por mês em que nenhum cai na janela — é o caso de hoje.",
-            icon="📭",
-        )
-        if mensais:
-            st.markdown("Mensais mais próximos:")
-            st.dataframe(
-                pd.DataFrame([{"Vencimento": f"{v:%d/%m/%Y}",
-                               "Dias úteis": dias_uteis(hoje, v)} for v in mensais[:4]]),
-                hide_index=True, **_LARGURA,
-            )
-        st.caption(
-            "Saídas: ajuste a janela no slider, marque **Mostrar vencimentos fora da "
-            "janela** para escolher na mão, ou desmarque **Somente séries mensais "
-            "padrão** para aceitar semanais."
-        )
+    # ---------------- Controles da aba ---------------------------------------
+    c_ativo, c_venc, c_acao = st.columns([5, 5, 1.3], vertical_alignment="bottom")
+    with c_ativo:
+        ativo = st.segmented_control("Ativo", ATIVOS, key="ativo_sel", required=True)
+        ativo = ativo or st.session_state.get("ativo_ult", "PETR4")
+        st.session_state["ativo_ult"] = ativo
+    with c_acao:
+        atualizar = st.button("Atualizar", icon=":material/refresh:", key="atualizar_op", **_LARGURA)
+    if atualizar and hasattr(extrair_automatico, "clear"):
+        extrair_automatico.clear()
+
+    # ---------------- Carga ---------------------------------------------------
+    estado, erro = _carregar(fonte, ativo, arquivo, usar_selenium, headless, hoje)
+    if erro:
+        _html(_cabecalho("falha na coleta", None, None, hoje, False), cabecalho)
+        _estado_vazio("alerta", "Não consegui buscar os dados",
+                      f"{_esc(erro)}<br>Enquanto isso, exporte a grade no opcoes.net.br e use "
+                      f"<b>Arquivo</b> na barra lateral, ou <b>Demo</b> para ver a interface.")
+        _rodape()
+        return
+    if estado is None:
+        _html(_cabecalho("aguardando arquivo", None, None, hoje, False), cabecalho)
+        _estado_vazio("fonte", "Envie a grade de opções",
+                      "Exporte a grade no opcoes.net.br (CSV ou Excel) e envie pela barra lateral. "
+                      "O painel reconhece as colunas mesmo que o site mude os nomes.")
         _rodape()
         return
 
-    # ---------------- Filtros e resultado ---------------------------------
-    filtrado, funil = aplicar_filtros(df, vencimento, delta_min, delta_max,
-                                      int(min_negocios), exigir_negocio,
-                                      max_atraso_du=int(max_atraso),
+    try:
+        df = preparar_dataframe(estado["df"], spot=(spot_manual or None), hoje=hoje, taxa=taxa_pct / 100.0)
+    except Exception as exc:
+        _html(_cabecalho(estado["fonte"], estado.get("coletado"), None, hoje, estado["demo"]), cabecalho)
+        _estado_vazio("alerta", "Não consegui interpretar a grade recebida", _esc(exc))
+        _rodape()
+        return
+
+    spot = df.attrs.get("spot")
+    ref_pregao = max(df["data_neg"].dropna()) if "data_neg" in df.columns and df["data_neg"].notna().any() else None
+    _html(_cabecalho(estado["fonte"], estado.get("coletado"), ref_pregao, hoje, estado["demo"]), cabecalho)
+
+    # ---------------- Vencimento ------------------------------------------------
+    vencimentos = sorted({v for v in df["vencimento"].dropna().unique()}) or calendario_vencimentos(hoje)
+    candidatos = [v for v in vencimentos if eh_vencimento_mensal(v)] if somente_padrao else vencimentos
+    no_ciclo = [v for v in candidatos if du_min <= dias_uteis(hoje, v) <= du_max]
+    elegiveis_v = no_ciclo or ((candidatos or vencimentos) if todos else [])
+    with c_venc:
+        if elegiveis_v:
+            chave_venc = f"venc_{fonte}_{ativo}"
+            if st.session_state.get(chave_venc) not in elegiveis_v:
+                st.session_state.pop(chave_venc, None)
+            venc = st.segmented_control(
+                "Vencimento", elegiveis_v, key=chave_venc, required=True,
+                default=None if chave_venc in st.session_state else elegiveis_v[0],
+                format_func=lambda v: f"{v:%d/%m} · {dias_uteis(hoje, v)} DU")
+            venc = venc or elegiveis_v[0]
+        else:
+            venc = None
+    if venc is None:
+        mensais = [v for v in vencimentos if eh_vencimento_mensal(v)][:4]
+        _estado_vazio("calendario", f"Nenhum vencimento mensal entre {du_min} e {du_max} dias úteis",
+                      "Os mensais da B3 (3ª sexta) ficam a ~21 dias úteis um do outro, então há dias do mês "
+                      "em que nenhum cai na janela. Ajuste a janela na barra lateral, ligue "
+                      "<b>Mostrar vencimentos fora da janela</b>, ou desligue <b>Somente séries mensais padrão</b>.",
+                      [f"{v:%d/%m/%Y} — {dias_uteis(hoje, v)} dias úteis" for v in mensais])
+        _rodape()
+        return
+
+    # ---------------- Filtros e ranking -----------------------------------------
+    filtrado, funil = aplicar_filtros(df, venc, delta_min, delta_max, int(min_negocios),
+                                      exigir_negocio, max_atraso_du=int(max_atraso),
                                       somente_padrao=somente_padrao)
     calls, puts = separar_calls_puts(filtrado)
+    grade_venc = df[df["vencimento"] == venc]
+    if somente_padrao:
+        grade_venc = grade_venc[grade_venc["ticker"].str.match(_RE_TICKER_PADRAO, na=False)]
+    iv_atm = None
+    if spot:
+        perto = grade_venc[(grade_venc["strike"] / spot - 1).abs() <= 0.02]["vol_impl"].dropna()
+        iv_atm = float(perto.median()) if not perto.empty else None
 
-    du_venc = dias_uteis(hoje, vencimento) if vencimento else "—"
-    # Uma linha só, de propósito: st.columns empilha no celular, e quatro
-    # métricas empurrariam as Calls/Puts para fora da primeira tela.
-    data_venc = f"{vencimento:%d/%m/%Y} ({du_venc} DU)" if vencimento else "—"
-    st.markdown(
-        f'<div class="op-resumo">'
-        f'<b>{ativo}</b>'
-        f'<span>vencimento <b style="color:var(--fg)">{data_venc}</b></span>'
-        f'<span><b style="color:var(--fg)">{len(calls)}</b> calls · '
-        f'<b style="color:var(--fg)">{len(puts)}</b> puts de {len(df)} na grade</span>'
-        f"<span>{_escape(estado['fonte'])} às {estado['ts']:%H:%M:%S}</span>"
-        f"</div>",
-        unsafe_allow_html=True,
-    )
+    vol_calls = float(grade_venc.loc[grade_venc["tipo"] == "CALL", "vol_financeiro"].sum())
+    vol_puts = float(grade_venc.loc[grade_venc["tipo"] == "PUT", "vol_financeiro"].sum())
+    picks = {}
+    if not calls.empty:
+        picks["CALL"] = calls.iloc[0]["ticker"]
+    if not puts.empty:
+        picks["PUT"] = puts.iloc[0]["ticker"]
+    faixa = f"|Δ| {_num(delta_min, 2)}–{_num(delta_max, 2)}"
+    call_html = (_cartao_sinal(calls.iloc[0], "call", len(calls), delta_min, delta_max) if not calls.empty
+                 else _cartao_vazio("call", f"Nenhuma call com {faixa} passou nos filtros neste vencimento."))
+    put_html = (_cartao_sinal(puts.iloc[0], "put", len(puts), delta_min, delta_max) if not puts.empty
+                else _cartao_vazio("put", f"Nenhuma put com {faixa} passou nos filtros neste vencimento."))
 
-    col_call, col_put = st.columns(2, gap="large")
-    with col_call:
-        _painel_lado("CALLS", "call", calls,
-                     "Nenhuma Call com Delta entre "
-                     f"{delta_min:.2f} e {delta_max:.2f} neste vencimento.")
-    with col_put:
-        _painel_lado("PUTS", "put", puts,
-                     "Nenhuma Put com Delta entre "
-                     f"-{delta_max:.2f} e -{delta_min:.2f} neste vencimento.")
+    calculados = int(df["delta_calculado"].sum()) if "delta_calculado" in df.columns else 0
+    nota = ("<b>Delta calculado pelo painel</b> — o opcoes.net.br não entrega os gregos no plano "
+            "gratuito. A volatilidade implícita é invertida do preço negociado e o Delta sai por "
+            f"Black-Scholes, com o ativo a {_moeda(spot)} e taxa de {_num(taxa_pct, 2, sufixo='%')} a.a. "
+            f"({calculados} opções).") if calculados else (
+            "Delta lido da própria fonte de dados.")
 
-    # ---------------- Diagnóstico e grade completa -------------------------
-    st.divider()
-    esq, dir_ = st.columns([1, 2])
+    _html(f"""
+    <div class="dx">
+      {_kpis(ativo, spot, venc, dias_uteis(hoje, venc), iv_atm, len(calls), len(puts), len(df), vol_calls, vol_puts)}
+      <div class="board">
+        <div class="a-call">{call_html}</div>
+        <div class="a-put">{put_html}</div>
+        <div class="a-chart">{_grafico_liquidez(grade_venc, set(filtrado["ticker"]), spot, picks)}</div>
+        <div class="a-tabs">{_tabela_ranking(calls, "call", len(calls))}{_tabela_ranking(puts, "put", len(puts))}</div>
+        <div class="a-funil">{_funil(funil, nota)}</div>
+      </div>
+    </div>""")
 
-    with esq.expander("🔎 Funil de filtragem", expanded=False):
-        st.dataframe(pd.DataFrame(funil, columns=["Etapa", "Opções"]),
-                     hide_index=True, **_LARGURA)
+    # ---------------- Detalhes ---------------------------------------------------
+    st.write("")
+    with st.expander("Grade completa do vencimento", icon=":material/table_view:"):
+        grade_tab, cfg = _grade_numerica(ordenar_por_liquidez(grade_venc))
+        st.dataframe(grade_tab, column_config=cfg, hide_index=True, height=420, **_LARGURA)
+        st.download_button(
+            "Baixar grade filtrada (CSV)", icon=":material/download:",
+            data=tabela_exibicao(filtrado).to_csv(index=False, sep=";").encode("utf-8-sig"),
+            file_name=f"opcoes_{ativo}_{venc:%Y%m%d}.csv", mime="text/csv")
+    with st.expander("Registro da coleta", icon=":material/receipt_long:"):
         for linha in estado.get("log", []):
             st.caption(linha)
-
-    with dir_.expander("📋 Grade completa do vencimento", expanded=False):
-        grade = ordenar_por_liquidez(
-            df[df["vencimento"] == vencimento] if vencimento is not None else df
-        )
-        tabela_grade = tabela_exibicao(grade)
-        if "data_hora" in grade.columns:
-            tabela_grade["Últ. neg."] = grade["data_hora"].astype(str).values
-        st.dataframe(tabela_grade, hide_index=True, height=380, **_LARGURA)
-        st.download_button(
-            "⬇️ Baixar grade filtrada (CSV)",
-            data=tabela_exibicao(filtrado).to_csv(index=False, sep=";").encode("utf-8-sig"),
-            file_name=f"opcoes_{ativo}_{vencimento:%Y%m%d}.csv" if vencimento else f"opcoes_{ativo}.csv",
-            mime="text/csv",
-        )
 
     _rodape()
 
 
-def _rodape() -> None:
-    st.markdown(
-        '<p class="rodape">Ferramenta de apoio à decisão para uso próprio. '
-        "Não constitui recomendação de investimento. Dados do opcoes.net.br "
-        "podem ter atraso — confirme preço e liquidez no home broker antes de operar.</p>",
-        unsafe_allow_html=True,
-    )
+def pagina_correlacoes(cabecalho) -> None:
+    with st.sidebar:
+        _sb("Correlações", primeiro=True)
+        auto = st.toggle("Atualizar sozinho a cada 1 min", key="auto_corr",
+                         help="Recarrega só esta aba; a grade de opções não é buscada de novo.")
+        _sb("Sobre os dados")
+        st.caption("Cotações do Yahoo Finance, em horário de Brasília. O atraso varia por bolsa (nos "
+                   "futuros dos EUA, até cerca de 10 min); a coluna Hora mostra a do último preço.")
+        st.caption("Minério de ferro (SGX e Dalian) não tem fonte gratuita aberta. BHP e Rio Tinto "
+                   "entram como termômetro do setor.")
+    ritmo = "Atualiza a cada <b>1 min</b>" if auto else "Atualização <b>manual</b>"
+    _html(_moldura("O que os mercados lá fora fizeram enquanto a B3 estava fechada",
+                   f'<span class="pill">{_ic("fonte")}<b>Yahoo Finance</b></span>'
+                   f'<span class="pill">{_ic("relogio")}{ritmo}</span>'), cabecalho)
+    st.fragment(_painel_mercados, run_every=60 if auto else None)()
+    _rodape("Cotações do Yahoo Finance, com atraso que varia por bolsa — confirme no home broker "
+            "antes de operar.")
+
+
+def _painel_mercados() -> None:
+    """Conteúdo da aba Correlações; roda como fragmento para se atualizar sozinho."""
+    c_jan, c_sts, c_acao = st.columns([4, 5, 1.3], vertical_alignment="bottom")
+    with c_jan:
+        janela = st.segmented_control("Janela da correlação", JANELAS_CORR, key="janela_corr",
+                                      required=True, format_func=lambda n: f"{n} pregões") or 60
+    with c_acao:
+        atualizar = st.button("Atualizar", icon=":material/refresh:", key="atualizar_mk", **_LARGURA)
+    if atualizar and hasattr(cotacoes_globais, "clear"):
+        cotacoes_globais.clear()
+
+    simbolos = simbolos_mercados()
+    try:
+        with st.spinner("Buscando cotações…"):
+            cot, quando, _ = cotacoes_globais(simbolos)
+    except Exception as exc:
+        _estado_vazio("alerta", "Não consegui buscar as cotações",
+                      f"{_esc(exc)}<br>O Yahoo Finance às vezes recusa conexões por alguns instantes. "
+                      "Tente <b>Atualizar</b> daqui a pouco.")
+        return
+    faltam = len(simbolos) - len(cot)
+    _html(f'<div class="dx"><div class="stline">{_ic("relogio")}<span>Cotações de <b>{quando:%H:%M:%S}</b>'
+          f'{f" · {faltam} mercados sem resposta" if faltam else ""}</span></div></div>', c_sts)
+
+    linhas_b3, colunas = [B3_YAHOO[a] for a in ATIVOS], [s for s, _ in MOTORES]
+    try:
+        with st.spinner("Calculando correlações…"):
+            hist = historico_diario(tuple(linhas_b3 + colunas))
+        corr, nobs = matriz_correlacao(hist, linhas_b3, colunas, int(janela))
+        mapa = _mapa_correlacao(corr, nobs, cot, int(janela))
+    except Exception as exc:
+        mapa = _cartao_aviso("grade", "Correlação com seus ativos",
+                             f"Não consegui montar a matriz agora: {_esc(exc)}")
+
+    agora = datetime.now(BRT)
+    variacoes = [abs(c["var_pct"]) for c in cot.values() if c["var_pct"] is not None]
+    escala = max(1.0, float(np.percentile(variacoes, 90))) if variacoes else 1.0
+    quadros = "".join(_quadro_grupo(chave, titulo, desc, itens, cot, escala, agora)
+                      for chave, titulo, desc, itens in GRUPOS_GLOBAIS)
+    _html(f'<div class="dx">{_pulso(cot, agora)}{mapa}'
+          f'<div class="sec"><div class="t">Cotações por mercado</div>'
+          f'<div class="d">Sessão: curva do dia, com o fechamento anterior tracejado · a barra da '
+          f'variação usa a mesma escala em todos os quadros</div></div>'
+          f'<div class="mk-grid">{quadros}</div></div>')
 
 
 if __name__ == "__main__":

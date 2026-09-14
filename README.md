@@ -1,7 +1,12 @@
-# 📈 Dashboard de Opções Day Trade — B3
+# 📈 Painel Day Trade — B3
 
-Painel Streamlit que filtra a grade de opções e aponta, em segundos, a **melhor Call**
-e a **melhor Put** do dia para `BOVA11`, `PETR4`, `VALE3`, `BBAS3`, `ITUB4` e `BPAC11`.
+Painel Streamlit em duas abas:
+
+- **Opções** — filtra a grade de opções e aponta, em segundos, a **melhor Call** e a
+  **melhor Put** do dia para `BOVA11`, `PETR4`, `VALE3`, `BBAS3`, `ITUB4` e `BPAC11`.
+- **Correlações** — o que os índices futuros, commodities, câmbio e ADRs fizeram
+  enquanto a B3 estava fechada, e o quanto cada mercado anda junto com os seis ativos.
+  Abre direto em `http://localhost:8501/?aba=correlacoes`.
 
 ## Como rodar
 
@@ -59,7 +64,7 @@ após 12h sem visita.
 | # | Filtro | Regra |
 |---|--------|-------|
 | 1 | **Nomenclatura** | Só a série mensal convencional da B3. Aplicado **antes** de tudo, para o topo do ranking de liquidez ser sempre um contrato padrão. |
-| 2 | **Vencimento** | **2 a 20 dias úteis**, apenas 3ª sexta. Seletor mostra `data · N DU · MENSAL/semanal`, com feriados da B3 calculados (Carnaval, Sexta Santa e Corpus Christi via algoritmo da Páscoa). |
+| 2 | **Vencimento** | **2 a 20 dias úteis**, apenas 3ª sexta. Seletor mostra `data · N DU`, com feriados da B3 calculados (Carnaval, Sexta Santa e Corpus Christi via algoritmo da Páscoa). |
 | 3 | **Frescor** | Descarta o que não negocia há mais de N pregões. Necessário porque o Delta é calculado do preço — veja abaixo. |
 | 4 | **Delta** | `\|Δ\|` entre **0,50 e 0,70** — Calls de +0,50 a +0,70, Puts de -0,50 a -0,70. |
 | 5 | **Liquidez** | Ordena por **Volume Financeiro ↓** e **Núm. de Negócios ↓**. **O topo da lista é a opção escolhida.** |
@@ -167,8 +172,70 @@ Duas travas resolvem:
   pequeno, mas existe.
 - **Dividendos não entram no modelo.** Se houver data-com antes do vencimento, o Delta
   das opções sobre a ação sai enviesado.
-- **A taxa livre de risco é um parâmetro**, em Ajustes avançados (padrão 10,75% a.a.).
-  Em opções curtas o efeito sobre o Delta é pequeno.
+- **A taxa livre de risco é um parâmetro**, na seção *Modelo* da barra lateral (padrão
+  10,75% a.a.). Em opções curtas o efeito sobre o Delta é pequeno.
+
+## Aba Correlações
+
+Para a checagem de antes da abertura: como foram a madrugada e a manhã lá fora.
+
+| Bloco | O que mostra |
+|---|---|
+| **Pulso** | S&P 500 e Nasdaq futuros, Brent, Hang Seng, Dólar/Real e EWZ: último, variação e a curva da sessão |
+| **Correlação com seus ativos** | matriz dos 6 ativos × 11 mercados (EWZ, S&P 500, VIX, Hang Seng, Brent, Cobre, Rio Tinto, Ouro, Dólar, DXY, Treasury 10 anos), janela de 20, 60 ou 120 pregões; na última coluna, os dois mercados mais correlacionados com cada ativo e quanto andam agora |
+| **Cotações por mercado** | 45 mercados em 8 quadros — EUA, Brasil em NY (ADRs e EWZ), Europa, Ásia, Energia, Metais, Câmbio e juros, Agrícolas |
+
+A aba se atualiza sozinha a cada minuto (desligável na barra lateral) e só roda quando
+está aberta: quem fica na aba Opções não espera pelas cotações globais.
+
+### De onde vêm os dados
+
+- **Yahoo Finance**, pelo endpoint `v7/finance/spark` (não oficial): até 20 símbolos por
+  chamada, três chamadas em paralelo, ~1 s para os 45 mercados. Cache de 1 min para as
+  cotações e de 1 h para o histórico diário.
+- **Por que não o investing.com:** o rodapé do site proíbe usar, armazenar ou reproduzir
+  os dados dele sem autorização por escrito. Os mesmos futuros e índices existem no
+  Yahoo, com o mesmo contrato de referência.
+- **Minério de ferro não tem fonte gratuita aberta.** O `TIO=F` do Yahoo está parado
+  desde agosto, e as cotações de SGX e Dalian dos portais chineses exigem se passar pelo
+  próprio portal. No lugar, BHP (Sydney) e Rio Tinto (Londres) servem de termômetro do
+  setor para VALE3.
+- **ADRs e EWZ fora do pregão:** no pré e no pós-mercado de Nova York, o preço é o do
+  último negócio estendido e a variação é contra o fechamento regular (etiqueta `PRÉ`).
+- **Atraso:** varia por bolsa (nos futuros dos EUA, até ~10 min). A coluna *Hora* mostra
+  o horário do último preço, em Brasília; mercado parado há mais de 30 min fica em cinza.
+
+### Como a correlação é calculada
+
+Pearson dos retornos diários, com três cuidados:
+
+1. **Data local de cada bolsa.** A barra diária do S&P futuro e a do Hang Seng têm
+   carimbos UTC diferentes, mas são o mesmo dia; o cruzamento é pela data local.
+2. **Retorno sobre o próprio pregão anterior**, antes de cruzar as séries. Assim um
+   feriado só nos EUA não apaga o retorno do dia seguinte na B3.
+3. **Últimos N pregões em comum** por par; par com menos da metade da janela fica em
+   branco.
+
+A Ásia fecha antes da B3 abrir: ali o número mede o quanto o pregão asiático antecipa o
+nosso. Correlação passada não garante o movimento de hoje.
+
+## Design
+
+Direção Swiss/minimalista, escura e densa (skill *ui-ux-pro-max*), com Fira Sans na
+interface e Fira Code nos tickers. A cor fica reservada aos dados:
+
+- **Call e put são identidade, não bom/ruim:** azul `#3987e5` e laranja `#d95926`, par
+  validado contra a superfície dos cards (`#0B0F1A`) — separação para daltonismo ΔE 26,8.
+- **Verde e vermelho só em variação com sinal**, sempre com seta.
+- **Matriz de correlação:** azul ↔ vermelho com meio cinza (ΔE 19,2 para daltonismo,
+  29,0 em visão normal); a mistura tem teto de 72%, o que mantém o número de cada
+  célula com contraste mínimo de 5,1:1.
+- Na aba Opções: carga automática ao escolher ativo e vencimento, faixa de KPIs com
+  Put/Call por volume, cartões da melhor call e da melhor put com medidor de Delta,
+  gráfico espelhado de liquidez por strike (só os elegíveis ganham cor), rankings e o
+  funil *Como a escolha foi feita*.
+- O layout segue a largura do contêiner: em telas ultralargas, call, gráfico e put ficam
+  lado a lado; no celular, tudo empilha.
 
 ## Robustez a mudança de colunas
 
@@ -189,23 +256,25 @@ Também é tolerado:
 ## Estrutura do `app.py`
 
 ```
-SEÇÃO 1  Configuração ......... ativos, faixas, rótulos das colunas
-SEÇÃO 2  Utilitários .......... parsing pt-BR, calendário e feriados da B3
-SEÇÃO 3  Normalização ......... mapeamento de colunas → schema canônico
-SEÇÃO 4  Extração ............. rotas A1 / A2 / B / Demo
-SEÇÃO 5  Processamento ........ os três filtros + ordenação por liquidez
-SEÇÃO 6  Formatação ........... números em pt-BR
-SEÇÃO 7  Interface ............ sidebar, colunas Calls/Puts, diagnóstico
+SEÇÃO 1   Configuração ......... ativos, faixas, rótulos das colunas
+SEÇÃO 2   Utilitários .......... parsing pt-BR, calendário e feriados da B3
+SEÇÃO 3   Normalização ......... mapeamento de colunas → schema canônico
+SEÇÃO 4   Extração ............. rotas A1 / A2 / B / Demo
+SEÇÃO 5   Processamento ........ os filtros + ordenação por liquidez
+SEÇÃO 5B  Mercados globais ..... cotações do Yahoo e matriz de correlação
+SEÇÃO 6   Formatação ........... números em pt-BR
+SEÇÃO 7   Interface ............ CSS, peças em HTML/SVG, as duas abas
 ```
 
 ## Diagnóstico
 
-O expander **🔎 Funil de filtragem** mostra quantas opções sobraram em cada etapa
-(grade completa → vencimento → delta → liquidez). Quando o painel voltar vazio, é ali
-que se vê qual filtro cortou tudo.
+O cartão **Como a escolha foi feita** mostra quantas opções sobraram em cada etapa
+(grade completa → série mensal → vencimento → frescor → delta → liquidez). Quando o
+painel voltar vazio, é ali que se vê qual filtro cortou tudo. O expander **Registro da
+coleta** lista o que veio de cada vencimento.
 
 ---
 
 Ferramenta de apoio à decisão para uso próprio. Não é recomendação de investimento.
-Dados do opcoes.net.br podem ter atraso — confirme preço e liquidez no home broker
-antes de operar.
+Dados do opcoes.net.br e do Yahoo Finance podem ter atraso — confirme preço e liquidez
+no home broker antes de operar.

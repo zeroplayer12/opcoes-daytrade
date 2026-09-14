@@ -1,8 +1,32 @@
-# Configuração do painel. Vale local e no Streamlit Community Cloud.
+# Tema do painel. Vale local e no Streamlit Community Cloud.
+# Direção: Swiss/minimal escuro e denso (skill ui-ux-pro-max). A cor fica
+# reservada aos dados (skill dataviz): o par categórico call/put foi validado
+# contra a superfície dos cards (#0B0F1A): CVD ΔE 26,8, contraste >= 3:1.
 
 [theme]
 base = "dark"
-primaryColor = "#16a34a"
+primaryColor = "#E2E8F0"
+backgroundColor = "#05070C"
+secondaryBackgroundColor = "#0B0F1A"
+textColor = "#E2E8F0"
+borderColor = "#1C2333"
+showWidgetBorder = true
+baseRadius = "8px"
+buttonRadius = "8px"
+font = "Fira Sans, system-ui, -apple-system, Segoe UI, sans-serif"
+headingFont = "Fira Sans, system-ui, -apple-system, Segoe UI, sans-serif"
+codeFont = "Fira Code, ui-monospace, Consolas, monospace"
+chartCategoricalColors = ["#3987e5", "#d95926"]
+dataframeBorderColor = "#1C2333"
+dataframeHeaderBackgroundColor = "#10151F"
+
+[theme.sidebar]
+backgroundColor = "#080B13"
+secondaryBackgroundColor = "#0F1422"
+borderColor = "#1C2333"
+
+[client]
+toolbarMode = "minimal"
 
 [server]
 headless = true

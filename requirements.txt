@@ -4,7 +4,7 @@
 # cada build, e o que não é usado só custa tempo e chance de quebrar.
 
 # --- Interface e dados -------------------------------------------------------
-streamlit>=1.31
+streamlit>=1.57
 pandas>=2.0
 numpy>=1.24
 
