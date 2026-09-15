@@ -207,14 +207,24 @@ class Estrategia:
     ativo = ""
     nome = ""
     minutos = 10
-    lote = 100
+    lote = 200                # ações por operação: ele opera 200 (15/09/2026)
     lote_padrao = 100         # lote da B3: ordem que não é múltiplo dele não executa
-    parcial_no_profit = True  # False: a parcial do código é de 50 ações e não executa
     stop_mercado = True       # VALE3/PETR4: False reproduz o stop-limite do código antigo
     folga_stop = 0.05         # stop-limite: distância do limite ao disparo (código antigo: 0,05)
     ultimo_candle = "16:50"   # abertura do último candle do pregão (horário de verão dos EUA)
     zera_no_fim_do_dia = False  # as estratégias dele carregam a posição de um dia para o outro
     breakeven = True
+
+    @property
+    def qtd_da_parcial(self) -> float | None:
+        """Ações da parcial do código (None: a estratégia não tem parcial)."""
+        return None
+
+    @property
+    def parcial_no_profit(self) -> bool:
+        """A parcial executa? Só se for múltiplo do lote padrão da B3 (com 100 ações, 50 não)."""
+        q = self.qtd_da_parcial
+        return q is None or q % self.lote_padrao == 0
 
     def indicadores(self, df: pd.DataFrame) -> pd.DataFrame:
         raise NotImplementedError
@@ -242,8 +252,9 @@ class Estrategia:
         stop (código atualizado em 15/09/2026; com `stop_mercado=False`, o stop-limite de
         0,05 do código antigo, que não executava em gap maior que 0,05).
 
-        A parcial é de metade do lote (50 ações), fora do lote padrão de 100 da B3: no
-        Profit ela não executa, e o que sobra dela é o stop no zero a zero."""
+        A parcial é metade da posição (PositionQty / 2): com 200 ações, 100 saem no alvo
+        1; com 100 seriam 50, fora do lote padrão de 100 da B3, e o Profit não executa —
+        sobra só o stop no zero a zero."""
         lado, entrada = op.lado, op.preco_sinal
         risco = (entrada - op.stop_inicial) * lado
         if self.stop_mercado and (b["low"] <= op.stop if lado > 0 else b["high"] >= op.stop):
@@ -269,11 +280,14 @@ class Vale3(Estrategia):
     candles anteriores com candle de alta, e stop (mínima de 3 candles − 0,03)
     a no máximo 1,60% do preço. Parcial de 50% em 1R com stop no zero a zero,
     alvo final em 2,5R (RiscoRetorno: o código traz 1,85, mas a lista de operações do
-    Profit só bate com 2,5), breakeven em 1,5R. No Profit a parcial não executa (50 ações
-    fica fora do lote padrão de 100); o fechamento além de 1R só leva o stop ao zero a zero.
+    Profit só bate com 2,5), breakeven em 1,5R. A parcial é metade da posição: com 200
+    ações, 100 saem em 1R (com 100, as 50 da parcial não executariam — fora do lote padrão).
     """
-    ativo, nome, minutos, lote = "VALE3", "Execução VALE3", 10, 100
-    parcial_no_profit = False
+    ativo, nome, minutos = "VALE3", "Execução VALE3", 10
+
+    @property
+    def qtd_da_parcial(self) -> float:
+        return self.lote / 2          # PositionQty / 2
 
     def __init__(self, risco_retorno: float = 2.50, breakeven: bool = True, max_stop_pct: float = 1.60):
         self.rr, self.breakeven, self.max_stop = risco_retorno, breakeven, max_stop_pct
@@ -313,10 +327,13 @@ class Petr4(Estrategia):
     média de 9 subindo ou descendo, ADX(14, 0) > 20, candle com corpo maior que
     5% da amplitude média de 14, volume acima da média de 20 e stop (extremo de
     4 candles ± 0,03) a no máximo 1,60%. Parcial de 50% em 1,5R, alvo final em
-    2,9R, breakeven em 1,5R. Mesma gestão da VALE3: no Profit a parcial não executa.
+    2,9R, breakeven em 1,5R. Mesma gestão da VALE3: parcial de metade da posição.
     """
-    ativo, nome, minutos, lote = "PETR4", "Execução PETR4", 20, 100
-    parcial_no_profit = False
+    ativo, nome, minutos = "PETR4", "Execução PETR4", 20
+
+    @property
+    def qtd_da_parcial(self) -> float:
+        return self.lote / 2          # PositionQty / 2
     ultimo_candle = "16:40"
 
     def __init__(self, rr_final: float = 2.90, fator_parcial: float = 1.50, filtro_amplitude: float = 0.05,
@@ -432,7 +449,7 @@ class Pullback(Estrategia):
 
 class Bpac11(Pullback):
     """Pullback BPAC11 (Profit), 15 min: alvo de 1,3%, stop limitado a 1,65%, entrada até 16:30."""
-    ativo, nome, minutos, lote = "BPAC11", "Pullback BPAC11", 15, 100
+    ativo, nome, minutos = "BPAC11", "Pullback BPAC11", 15
     ultimo_candle = "16:45"
 
     def __init__(self, alvo_pct: float = 1.3, max_stop_pct: float = 1.65, hora_limite: int = 1630):
@@ -444,7 +461,7 @@ class Bbas3(Pullback):
     (FiltroForcaMult 0,0035 no Profit, confirmado; o código enviado traz 0,0025),
     entrada até 14:00 e sem filtro de tamanho do stop. O código do Profit não pinta o candle do
     sinal; aqui ele é pintado mesmo assim, para o gráfico mostrar onde a operação começou."""
-    ativo, nome, minutos, lote = "BBAS3", "Pullback BBAS3", 10, 100
+    ativo, nome, minutos = "BBAS3", "Pullback BBAS3", 10
 
     def __init__(self, alvo_pct: float = 1.5, filtro_forca: float = 0.0035, hora_limite: int = 1400):
         super().__init__(alvo_pct, hora_limite, filtro_forca=filtro_forca)
@@ -455,7 +472,7 @@ class Bova11(Pullback):
     ± 0,05 limitado a 1,85%, força da tendência acima de 0,15% do preço e entrada até o candle das
     16:00 (o último do pregão, então a entrada pode ficar para a abertura do dia seguinte). O código
     do Profit não pinta o candle do sinal; aqui ele é pintado mesmo assim."""
-    ativo, nome, minutos, lote = "BOVA11", "Pullback BOVA11", 60, 100
+    ativo, nome, minutos = "BOVA11", "Pullback BOVA11", 60
     ultimo_candle = "16:00"
 
     def __init__(self, alvo_pct: float = 2.30, max_stop_pct: float = 1.85, filtro_forca: float = 0.0015,
@@ -474,19 +491,22 @@ class Itub4(Estrategia):
     de 20, candle de alta rompendo a máxima do anterior e entrada só até o candle
     das 13:00. Stop na mínima de 4 candles − 0,02, com risco de até 1,40%.
 
-    Gestão: parcial de 50 ações em 2R; quando a máxima de um candle toca a 2R, o
-    stop vai para o zero a zero e o alvo final (4,4R) entra. O stop sai a mercado
-    no candle seguinte ao toque. A parcial é de 50 ações, fora do lote padrão de 100:
-    no Profit ela nunca executa (nas 3 operações do backtest, as 100 ações saem no alvo
-    final), e o toque na 2R só leva o stop ao zero a zero e liga o alvo final.
+    Gestão: parcial de 50 ações em 2R (fixa no código, não é metade da posição);
+    quando a máxima de um candle toca a 2R, o stop vai para o zero a zero e o alvo
+    final (4,4R) entra. O stop sai a mercado no candle seguinte ao toque. As 50 ações
+    ficam fora do lote padrão de 100: no Profit a parcial nunca executa (nas operações
+    do backtest a posição inteira sai no alvo final), nem operando 200.
 
     O toque no stop é testado antes de a parcial mover o stop (código corrigido em
     15/09/2026). O código antigo movia primeiro: se o candle que chegava na 2R tinha
     passado pela entrada — o próprio candle de entrada, por exemplo —, zerava na
     abertura seguinte. `stop_antes_do_breakeven=False` reproduz o antigo.
     """
-    ativo, nome, minutos, lote = "ITUB4", "Execução ITUB4", 15, 100
-    parcial_no_profit = False
+    ativo, nome, minutos = "ITUB4", "Execução ITUB4", 15
+
+    @property
+    def qtd_da_parcial(self) -> float:
+        return self.qtd_parcial
     stop_antes_do_breakeven = True
     ultimo_candle = "16:45"
 
@@ -679,7 +699,11 @@ def barras_5min(ativo: str, faixa: str = "5d") -> pd.DataFrame:
                         headers=_UA, timeout=20)
     resp.raise_for_status()
     r = resp.json()["chart"]["result"][0]
-    q = r["indicators"]["quote"][0]
+    q = (r.get("indicators", {}).get("quote") or [{}])[0]
+    if not r.get("timestamp") or "open" not in q:
+        # pregão recém-aberto (o Yahoo atrasa ~15 min) ou sem negócio: nenhuma barra ainda
+        return pd.DataFrame({k: pd.Series(dtype=float) for k in ("open", "high", "low", "close", "volume")},
+                            index=pd.DatetimeIndex([], tz=BRT))
     df = pd.DataFrame({k: q[k] for k in ("open", "high", "low", "close", "volume")},
                       index=pd.to_datetime(r["timestamp"], unit="s", utc=True).tz_convert(BRT))
     return df.dropna(subset=["open", "high", "low", "close"])
@@ -702,14 +726,22 @@ def barras_rtd(ativo: str, pasta, dia) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame()
     idx = pd.to_datetime(df["ts"], unit="s", utc=True).dt.tz_convert(BRT)
+    if "hor" in df:
+        # horário do negócio segundo o Profit (HOR): o relógio do PC pode estar fora (em
+        # 15/09/2026, 22 s atrás da B3). Só vale quando é deste pregão, perto do relógio
+        # local — a primeira linha do dia traz o HOR do último negócio de ontem
+        hor = pd.to_datetime(f"{dia:%Y-%m-%d} " + df["hor"].astype(str), format="%Y-%m-%d %H:%M:%S",
+                             errors="coerce").dt.tz_localize(BRT)
+        idx = hor.where((hor - idx).abs() <= pd.Timedelta(minutes=5), idx)
     s = pd.DataFrame({"ult": df["ult"].to_numpy(), "qtt": df["qtt"].to_numpy()}, index=idx.to_numpy())
     s.index = pd.DatetimeIndex(s.index).tz_convert(BRT)
+    s["vol"] = s["qtt"].diff().clip(lower=0).fillna(0)       # na ordem em que chegou
+    s = s.sort_index(kind="stable")
     # pregão, leilão de fechamento e after-market (o Profit mostra negócios até ~18:25)
     s = s[(s.index.strftime("%H:%M") >= "10:00") & (s.index.strftime("%H:%M") <= "18:30")]
     if s.empty:
         return pd.DataFrame()
-    vol = s["qtt"].diff().clip(lower=0).fillna(0)
-    agrup = s.assign(vol=vol).resample("5min", label="left", closed="left", origin="start_day")
+    agrup = s.resample("5min", label="left", closed="left", origin="start_day")
     barras = pd.DataFrame({"open": agrup["ult"].first(), "high": agrup["ult"].max(), "low": agrup["ult"].min(),
                            "close": agrup["ult"].last(), "volume": agrup["vol"].sum()}).dropna(subset=["open"])
     barras.attrs["inicio"] = s.index[0]

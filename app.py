@@ -3152,7 +3152,12 @@ def _barras_rtd_passado(ativo: str, dia) -> pd.DataFrame:
 
 @cache_dados(ttl=30, show_spinner=False)
 def _barras_recentes(ativo: str) -> pd.DataFrame:
-    return ope.barras_5min(ativo, "1d")
+    """Pregão de hoje pelo Yahoo. Falhar aqui não pode derrubar a aba: sem ele, fica o
+    histórico mais o que o coletor RTD gravou."""
+    try:
+        return ope.barras_5min(ativo, "1d")
+    except Exception:
+        return pd.DataFrame()
 
 
 PASTA_RT = Path(__file__).resolve().parent / "dados_rt"   # onde o coletor_rtd.py grava
@@ -3166,7 +3171,10 @@ def barras_estrategia(ativo: str) -> pd.DataFrame:
     Todo pregão que o coletor RTD gravou (o de hoje inclusive) vem dele — com os leilões e o
     after-market, como no Profit; o resto vem do Yahoo. O ajuste por proventos fica por
     último, porque o RTD grava o preço negociado, sem ajuste."""
-    barras = pd.concat([_barras_historico(ativo), _barras_recentes(ativo)])
+    partes = [p for p in (_barras_historico(ativo), _barras_recentes(ativo)) if len(p)]
+    if not partes:
+        return pd.DataFrame()
+    barras = pd.concat(partes)
     barras = barras[~barras.index.duplicated(keep="last")].sort_index()
     hoje = datetime.now(BRT).date()
     if len(barras):
@@ -3264,8 +3272,9 @@ def _cartao_operacao(ativo: str, est, res, formando, erro: str | None) -> str:
         if parcial:
             parcial_txt = f'<em class="ok">executada {_quando(parcial.hora, dia)}</em>'
         elif not getattr(est, "parcial_no_profit", True):
-            parcial_txt = ('<em title="A parcial do código é de 50 ações, e o lote padrão da B3 é de 100: '
-                           'no Profit a ordem não executa">não executa (50 ações)</em>')
+            q = f"{est.qtd_da_parcial:.0f}"
+            parcial_txt = (f'<em title="A parcial do código é de {q} ações, fora do lote padrão de 100 da B3: '
+                           f'no Profit a ordem não executa">não executa ({q} ações)</em>')
         else:
             parcial_txt = "<em>pendente</em>"
         meio = (f'<div><span>Parcial</span><b>{_moeda(op.alvo1)}</b>{parcial_txt}</div>'

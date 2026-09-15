@@ -329,6 +329,10 @@ gráfico de candles do pregão com as linhas da operação. Abre direto em
   seguinte ao toque; o teste do toque vem antes de a parcial ou o breakeven moverem o stop.
   O código novo das duas foi entregue para atualizar no Profit. As listas de operações
   antigas se conferem com `stop_mercado=False`.
+- **Lote de 200 ações (15/09/2026):** é o que ele opera. Com 200, a parcial da VALE3 e da
+  PETR4 (metade da posição, 100 ações) executa; a da ITUB4 é fixa em 50 no código e
+  continua sem executar. As listas de operações transcritas eram de 100 ações, e o
+  `compara_profit.py` simula cada uma com o lote dela.
 - **Tempo real pelo Profit:** o `coletor_rtd.py` lê as cotações dos 6 ativos no servidor
   RTD do Profit (o mesmo do Excel: `=RTD("RTDTrading.RTDServer";; "VALE3_B_0"; "ULT")`,
   campos ULT, QTT, VOL, NEG e HOR) e grava cada mudança em `dados_rt/AAAA-MM-DD.csv`.
