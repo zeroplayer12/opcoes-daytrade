@@ -333,6 +333,13 @@ gráfico de candles do pregão com as linhas da operação. Abre direto em
   PETR4 (metade da posição, 100 ações) executa; a da ITUB4 é fixa em 50 no código e
   continua sem executar. As listas de operações transcritas eram de 100 ações, e o
   `compara_profit.py` simula cada uma com o lote dela.
+- **BPAC11 com alvo de 2% (15/09/2026):** no backtest do Profit de 01/01/2022 a 15/09/2026,
+  com 200 ações, alvo de 2% e zero a zero ao fechar a 70% do caminho até o alvo deu R$ 8.256
+  contra R$ 6.892 do original (1,3%): fator de lucro 1,24 × 1,20 e lucro por operação
+  R$ 9,18 × 6,79, com a mesma maior perda e queda topo-fundo parecida — em troca de acerto
+  menor (38% × 45%) e sequências de perda mais longas. O lucro por operação maior é o que
+  mais pesa: os custos da B3 comem boa parte dos R$ 6,79 do original. O zero a zero quase
+  não muda o resultado; ficou porque foi a combinação testada.
 - **Tempo real pelo Profit:** o `coletor_rtd.py` lê as cotações dos 6 ativos no servidor
   RTD do Profit (o mesmo do Excel: `=RTD("RTDTrading.RTDServer";; "VALE3_B_0"; "ULT")`,
   campos ULT, QTT, VOL, NEG e HOR) e grava cada mudança em `dados_rt/AAAA-MM-DD.csv`.

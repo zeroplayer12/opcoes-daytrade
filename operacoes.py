@@ -389,7 +389,7 @@ class Pullback(Estrategia):
     inverso), pullback (a mínima deste candle ou do anterior tocou a média de 9;
     na venda, a máxima), volume acima da média de 20, candle a favor rompendo a
     máxima (mínima) do anterior e entrada só em candle até a hora limite. Alvo
-    fixo em %, sem parcial nem breakeven; stop técnico no extremo dos últimos N
+    fixo em %, sem parcial (zero a zero opcional, `gatilho_be`); stop técnico no extremo dos últimos N
     candles, com folga (3 candles ± 0,03 na BPAC11 e na BBAS3; 2 ± 0,05 no BOVA11).
     Filtros opcionais: tamanho máximo do stop (%) e força da tendência
     (distância entre as médias de 9 e 21 maior que uma fração do preço).
@@ -401,8 +401,9 @@ class Pullback(Estrategia):
     """
 
     def __init__(self, alvo_pct: float, hora_limite: int, max_stop_pct: float | None = None,
-                 filtro_forca: float | None = None, stop_candles: int = 3, stop_folga: float = 0.03):
-        self.alvo_pct, self.hora_limite = alvo_pct, hora_limite
+                 filtro_forca: float | None = None, stop_candles: int = 3, stop_folga: float = 0.03,
+                 gatilho_be: float = 0.0):
+        self.alvo_pct, self.hora_limite, self.gatilho_be = alvo_pct, hora_limite, gatilho_be
         self.max_stop, self.filtro_forca = max_stop_pct, filtro_forca
         self.stop_candles, self.stop_folga = stop_candles, stop_folga
 
@@ -440,20 +441,27 @@ class Pullback(Estrategia):
                 return ([Ordem("mercado", lado, self.lote, rotulo="entrada")],
                         "verde" if lado > 0 else "vermelho", nova)
             return [], None, None
-        ordens = [Ordem("limite", -op.lado, None, op.alvo2, "alvo")]
-        tocou = b["low"] <= op.stop if op.lado > 0 else b["high"] >= op.stop
-        if tocou:
-            ordens.append(Ordem("mercado", -op.lado, None, rotulo="stop"))
-        return ordens, None, None
+        lado, entrada = op.lado, op.preco_sinal
+        if b["low"] <= op.stop if lado > 0 else b["high"] >= op.stop:     # stop que valia neste candle
+            return [Ordem("mercado", -lado, None, rotulo="stop")], None, None
+        # zero a zero: candle fechou além de `gatilho_be` do caminho até o alvo (vale do próximo em diante)
+        if self.gatilho_be and not op.stop_movido and \
+                (b["close"] - (entrada + (op.alvo2 - entrada) * self.gatilho_be)) * lado >= 0:
+            op.stop, op.stop_movido = entrada + 0.01 * lado, True
+        return [Ordem("limite", -lado, None, op.alvo2, "alvo")], None, None
 
 
 class Bpac11(Pullback):
-    """Pullback BPAC11 (Profit), 15 min: alvo de 1,3%, stop limitado a 1,65%, entrada até 16:30."""
+    """Pullback BPAC11 (Profit), 15 min: alvo de 2%, stop limitado a 1,65%, entrada até 16:30 e stop
+    no zero a zero quando um candle fecha a 70% do caminho até o alvo. Versão adotada em 15/09/2026
+    pelo backtest de 2022 a 2026; a anterior tinha alvo de 1,3% e nenhum zero a zero
+    (`Bpac11(alvo_pct=1.3, gatilho_be=0)`, com que se confere a lista de operações antiga)."""
     ativo, nome, minutos = "BPAC11", "Pullback BPAC11", 15
     ultimo_candle = "16:45"
 
-    def __init__(self, alvo_pct: float = 1.3, max_stop_pct: float = 1.65, hora_limite: int = 1630):
-        super().__init__(alvo_pct, hora_limite, max_stop_pct=max_stop_pct)
+    def __init__(self, alvo_pct: float = 2.0, max_stop_pct: float = 1.65, hora_limite: int = 1630,
+                 gatilho_be: float = 0.7):
+        super().__init__(alvo_pct, hora_limite, max_stop_pct=max_stop_pct, gatilho_be=gatilho_be)
 
 
 class Bbas3(Pullback):
