@@ -3274,12 +3274,13 @@ def _cartao_operacao(ativo: str, est, res, formando, erro: str | None) -> str:
         ate_stop = abs(op.stop - preco) / preco * 100
         meio = (f'<div><span>Alvo</span><b>{_moeda(op.alvo2)}</b><em>faltam {_num(falta, 2)}%</em></div>'
                 f'<div><span>Até o stop</span><b>{_num(ate_stop, 2)}%</b><em>sem parcial</em></div>')
-    if op.stop_movido:
-        stop_txt = "no zero a zero"
-    elif not tem_parcial:
-        stop_txt = "sai a mercado após tocar"
+    # todas as estratégias saem a mercado na abertura do candle seguinte ao toque no stop
+    if any(od.rotulo == "stop" and od.tipo == "mercado" for od in res.pendentes):
+        stop_txt = "tocado: sai na próxima abertura"
+    elif op.stop_movido:
+        stop_txt = "no zero a zero · a mercado ao tocar"
     else:
-        stop_txt = f"risco de {_num(abs(op.stop - ent.preco) / ent.preco * 100, 2)}%"
+        stop_txt = f"risco de {_num(abs(op.stop - ent.preco) / ent.preco * 100, 2)}% · a mercado ao tocar"
     return (f'<div class="card opc"><div class="opc-h">{cab}<span class="sts {classe}">{icone}{lado_txt}</span></div>'
             f'<div class="opc-res"><div class="v {tom}">{_reais(resultado)}</div>'
             f'<div class="d">{_num(pct, 2, sufixo="%", sinal=True)} sobre a entrada · {_num(abs(op.qtd), 0)} de '

@@ -320,6 +320,13 @@ gráfico de candles do pregão com as linhas da operação. Abre direto em
   uma operação diferente desloca as seguintes. Os pregões gravados pelo coletor RTD vêm do
   próprio Profit, com leilão e after-market, e substituem o Yahoo, então a simulação fica
   mais fiel a cada dia gravado.
+- **Stop a mercado em todas (15/09/2026):** a VALE3 e a PETR4 usavam stop-limite de 0,05
+  (`SellToCoverStop(stop, stop - 0.05)`), que não executa num gap maior que 0,05 e deixa a
+  posição aberta sem proteção até o preço voltar — justo o caso de quem carrega posição
+  para o dia seguinte. Agora, como as outras quatro, saem a mercado na abertura do candle
+  seguinte ao toque; o teste do toque vem antes de a parcial ou o breakeven moverem o stop.
+  O código novo das duas foi entregue para atualizar no Profit. As listas de operações
+  antigas se conferem com `stop_mercado=False`.
 - **Tempo real pelo Profit:** o `coletor_rtd.py` lê as cotações dos 6 ativos no servidor
   RTD do Profit (o mesmo do Excel: `=RTD("RTDTrading.RTDServer";; "VALE3_B_0"; "ULT")`,
   campos ULT, QTT, VOL, NEG e HOR) e grava cada mudança em `dados_rt/AAAA-MM-DD.csv`.

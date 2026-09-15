@@ -164,7 +164,7 @@ def _preenche(ordem: Ordem, o: float, h: float, l: float) -> float | None:
     - limite: se o candle abre além do preço, a favor, sai na abertura (na BPAC11, alvos
       de 1,3% saíram com 2 a 3% depois de gap); senão, sai no próprio preço se o candle
       chegar nele;
-    - stop (stop-limite de 0,05 na VALE3 e na PETR4): sai no disparo quando o candle chega
+    - stop-limite (VALE3 e PETR4 até 15/09/2026): sai no disparo quando o candle chega
       nele; num gap além do disparo, sai na abertura se ela estiver dentro do limite
       (PETR4, 24/06/2026: stop 37,85, abertura 37,83, saída 37,83); se abriu além do
       limite, só sai se o preço voltar — no próprio disparo, se o candle chegar nele
@@ -210,6 +210,8 @@ class Estrategia:
     lote = 100
     lote_padrao = 100         # lote da B3: ordem que não é múltiplo dele não executa
     parcial_no_profit = True  # False: a parcial do código é de 50 ações e não executa
+    stop_mercado = True       # VALE3/PETR4: False reproduz o stop-limite do código antigo
+    folga_stop = 0.05         # stop-limite: distância do limite ao disparo (código antigo: 0,05)
     ultimo_candle = "16:50"   # abertura do último candle do pregão (horário de verão dos EUA)
     zera_no_fim_do_dia = False  # as estratégias dele carregam a posição de um dia para o outro
     breakeven = True
@@ -235,12 +237,17 @@ class Estrategia:
 
     def _gerenciar(self, b: pd.Series, op: Operacao, nivel_breakeven: float) -> list[Ordem]:
         """Seção 7 do NTSL: parcial de 50% na alvo 1 com stop no zero a zero, breakeven num
-        múltiplo do risco, e a cada candle o alvo final e o stop (stop-limite de 0,05).
+        múltiplo do risco e, a cada candle, o alvo final. O stop sai a mercado na abertura
+        do candle seguinte ao toque, testado antes de a parcial ou o breakeven moverem o
+        stop (código atualizado em 15/09/2026; com `stop_mercado=False`, o stop-limite de
+        0,05 do código antigo, que não executava em gap maior que 0,05).
 
         A parcial é de metade do lote (50 ações), fora do lote padrão de 100 da B3: no
         Profit ela não executa, e o que sobra dela é o stop no zero a zero."""
         lado, entrada = op.lado, op.preco_sinal
         risco = (entrada - op.stop_inicial) * lado
+        if self.stop_mercado and (b["low"] <= op.stop if lado > 0 else b["high"] >= op.stop):
+            return [Ordem("mercado", -lado, None, rotulo="stop")]
         ordens = []
         if not op.parcial_feita and (b["close"] - op.alvo1) * lado >= 0:
             ordens.append(Ordem("limite", -lado, abs(op.qtd) / 2, op.alvo1, "parcial"))
@@ -249,7 +256,8 @@ class Estrategia:
                 (b["close"] - (entrada + lado * risco * nivel_breakeven)) * lado >= 0:
             op.stop, op.stop_movido = entrada + 0.01 * lado, True
         ordens.append(Ordem("limite", -lado, None, op.alvo2, "alvo"))
-        ordens.append(Ordem("stop", -lado, None, op.stop, "stop", limite=op.stop - 0.05 * lado))
+        if not self.stop_mercado:
+            ordens.append(Ordem("stop", -lado, None, op.stop, "stop", limite=op.stop - self.folga_stop * lado))
         return ordens
 
 
