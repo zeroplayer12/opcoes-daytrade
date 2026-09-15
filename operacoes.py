@@ -479,9 +479,15 @@ class Itub4(Estrategia):
     no candle seguinte ao toque. A parcial é de 50 ações, fora do lote padrão de 100:
     no Profit ela nunca executa (nas 3 operações do backtest, as 100 ações saem no alvo
     final), e o toque na 2R só leva o stop ao zero a zero e liga o alvo final.
+
+    O toque no stop é testado antes de a parcial mover o stop (código corrigido em
+    15/09/2026). O código antigo movia primeiro: se o candle que chegava na 2R tinha
+    passado pela entrada — o próprio candle de entrada, por exemplo —, zerava na
+    abertura seguinte. `stop_antes_do_breakeven=False` reproduz o antigo.
     """
     ativo, nome, minutos, lote = "ITUB4", "Execução ITUB4", 15, 100
     parcial_no_profit = False
+    stop_antes_do_breakeven = True
     ultimo_candle = "16:45"
 
     def __init__(self, fator_parcial: float = 2.00, fator_alvo: float = 4.40, max_stop_pct: float = 1.40,
@@ -529,6 +535,8 @@ class Itub4(Estrategia):
                 self._ja_operou = True
                 return [Ordem("mercado", 1, self.lote, rotulo="entrada")], "verde", nova
             return [], None, None
+        if self.stop_antes_do_breakeven and b["low"] <= op.stop:
+            return [Ordem("mercado", -1, None, rotulo="stop")], None, None
         ordens = []
         if not op.parcial_feita:
             ordens.append(Ordem("limite", -1, self.qtd_parcial, op.alvo1, "parcial"))
@@ -536,7 +544,7 @@ class Itub4(Estrategia):
                 op.parcial_feita, op.stop, op.stop_movido = True, op.preco_sinal + 0.01, True
         if op.parcial_feita:
             ordens.append(Ordem("limite", -1, None, op.alvo2, "alvo"))
-        if b["low"] <= op.stop:
+        if not self.stop_antes_do_breakeven and b["low"] <= op.stop:
             ordens.append(Ordem("mercado", -1, None, rotulo="stop"))
         return ordens, None, None
 
