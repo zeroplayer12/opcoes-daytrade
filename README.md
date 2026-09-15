@@ -351,6 +351,12 @@ gráfico de candles do pregão com as linhas da operação. Abre direto em
   contra R$ 13.838 da original, fator de lucro 1,49 × 1,43 e queda topo-fundo R$ 3.932 × 4.992,
   com a mesma maior perda (R$ 866, de gap). A 50% ficou abaixo da original no saldo, e a parcial
   de 50% rendeu 36% menos com queda maior. `Bova11(gatilho_be=0)` volta à anterior.
+- **VALE3 sem parcial, com zero a zero a 50% (15/09/2026):** no backtest de 01/01/2022 a
+  15/09/2026 (200 ações), tirar a parcial de 1R e levar o stop ao zero a zero só quando um
+  candle fecha a 50% do caminho até o alvo de 2,5R deu R$ 16.416 contra R$ 14.342 da gestão
+  anterior (parcial e zero a zero em 1R): fator de lucro 1,35 × 1,31, lucro por operação
+  R$ 18,44 × 13,92 e queda topo-fundo R$ 1.776 × 1.911, com a mesma maior perda. Zero a zero a
+  70% deu R$ 15.988 e só alvo e stop R$ 15.202. `Vale3(parcial_antiga=True)` volta à anterior.
 - **Tempo real pelo Profit:** o `coletor_rtd.py` lê as cotações dos 6 ativos no servidor
   RTD do Profit (o mesmo do Excel: `=RTD("RTDTrading.RTDServer";; "VALE3_B_0"; "ULT")`,
   campos ULT, QTT, VOL, NEG e HOR) e grava cada mudança em `dados_rt/AAAA-MM-DD.csv`.

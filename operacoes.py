@@ -245,6 +245,18 @@ class Estrategia:
                       entrada + lado * risco * rr_final, stop=stop)
         return [Ordem("mercado", lado, self.lote, rotulo="entrada")], ("verde" if lado > 0 else "vermelho"), op
 
+    def _gerenciar_sem_parcial(self, b: pd.Series, op: Operacao) -> list[Ordem]:
+        """Gestão sem parcial (VALE3 desde 15/09/2026): stop a mercado no candle seguinte ao
+        toque, testado antes; zero a zero quando um candle fecha a `gatilho_be` do caminho até o
+        alvo final (0 = sem zero a zero); alvo final em limite a cada candle."""
+        lado, entrada = op.lado, op.preco_sinal
+        if b["low"] <= op.stop if lado > 0 else b["high"] >= op.stop:
+            return [Ordem("mercado", -lado, None, rotulo="stop")]
+        if self.gatilho_be and not op.stop_movido and \
+                (b["close"] - (entrada + (op.alvo2 - entrada) * self.gatilho_be)) * lado >= 0:
+            op.stop, op.stop_movido = entrada + 0.01 * lado, True
+        return [Ordem("limite", -lado, None, op.alvo2, "alvo")]
+
     def _gerenciar(self, b: pd.Series, op: Operacao, nivel_breakeven: float) -> list[Ordem]:
         """Seção 7 do NTSL: parcial de 50% na alvo 1 com stop no zero a zero, breakeven num
         múltiplo do risco e, a cada candle, o alvo final. O stop sai a mercado na abertura
@@ -286,11 +298,16 @@ class Vale3(Estrategia):
     ativo, nome, minutos = "VALE3", "Execução VALE3", 10
 
     @property
-    def qtd_da_parcial(self) -> float:
-        return self.lote / 2          # PositionQty / 2
+    def qtd_da_parcial(self) -> float | None:
+        return self.lote / 2 if self.parcial_antiga else None     # PositionQty / 2
 
-    def __init__(self, risco_retorno: float = 2.50, breakeven: bool = True, max_stop_pct: float = 1.60):
+    # Desde 15/09/2026, sem parcial e com zero a zero ao fechar a 50% do caminho até o alvo (V1 do
+    # backtest de 2022 a 2026, 200 ações: R$ 16.416 × 14.342, queda topo-fundo R$ 1.776 × 1.911).
+    # parcial_antiga=True volta à gestão anterior (parcial em 1R e zero a zero em 1R/1,5R).
+    def __init__(self, risco_retorno: float = 2.50, breakeven: bool = True, max_stop_pct: float = 1.60,
+                 gatilho_be: float = 0.5, parcial_antiga: bool = False):
         self.rr, self.breakeven, self.max_stop = risco_retorno, breakeven, max_stop_pct
+        self.gatilho_be, self.parcial_antiga = gatilho_be, parcial_antiga
 
     def indicadores(self, df: pd.DataFrame) -> pd.DataFrame:
         c, h, l = df["close"], df["high"], df["low"]
@@ -314,9 +331,12 @@ class Vale3(Estrategia):
         if op is None:
             if b["sinal_compra"] or b["sinal_venda"]:
                 lado = 1 if b["sinal_compra"] else -1
-                return self._entrada(b, lado, b["stop_compra"] if lado > 0 else b["stop_venda"], 1.0, self.rr)
+                return self._entrada(b, lado, b["stop_compra"] if lado > 0 else b["stop_venda"],
+                                     1.0 if self.parcial_antiga else NAN, self.rr)
             return [], None, None
-        return self._gerenciar(b, op, 1.5), None, None
+        if self.parcial_antiga:
+            return self._gerenciar(b, op, 1.5), None, None
+        return self._gerenciar_sem_parcial(b, op), None, None
 
 
 class Petr4(Estrategia):
