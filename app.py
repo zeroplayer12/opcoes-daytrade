@@ -3215,6 +3215,7 @@ def _cartao_operacao(ativo: str, est, res, formando, erro: str | None) -> str:
     lado_txt, classe = ("Comprado", "compra") if op.lado > 0 else ("Vendido", "venda")
     icone = _ic("sobe") if op.lado > 0 else _ic("desce")
     parcial = next((e for e in op.execucoes if e.rotulo == "parcial"), None)
+    tem_parcial = not pd.isna(op.alvo1)
     tom = "up" if resultado > 0 else ("down" if resultado < 0 else "")
 
     def pos(v: float) -> float:
@@ -3224,13 +3225,26 @@ def _cartao_operacao(ativo: str, est, res, formando, erro: str | None) -> str:
     regua = (f'<div class="regua"><div class="trilho"></div>'
              f'<div class="m" style="left:0%"><span>stop</span></div>'
              f'<div class="m cima" style="left:{pos(op.preco_sinal):.1f}%"><span>entrada</span></div>'
-             f'<div class="m cima" style="left:{pos(op.alvo1):.1f}%"><span>parcial</span></div>'
-             f'<div class="m" style="left:100%"><span>alvo</span></div>'
+             + (f'<div class="m cima" style="left:{pos(op.alvo1):.1f}%"><span>parcial</span></div>'
+                if tem_parcial else "")
+             + f'<div class="m" style="left:100%"><span>alvo</span></div>'
              f'<div class="ag {tom}" style="left:{pos(preco):.1f}%" title="preço atual {_moeda(preco)}"></div></div>')
     falta = abs(op.alvo2 - preco) / preco * 100
-    parcial_txt = (f'<em class="ok">executada {_quando(parcial.hora, dia)}</em>' if parcial
-                   else "<em>pendente</em>")
-    stop_txt = "no zero a zero" if op.stop_movido else f"risco de {_num(abs(op.stop - ent.preco) / ent.preco * 100, 2)}%"
+    if tem_parcial:
+        parcial_txt = (f'<em class="ok">executada {_quando(parcial.hora, dia)}</em>' if parcial
+                       else "<em>pendente</em>")
+        meio = (f'<div><span>Parcial</span><b>{_moeda(op.alvo1)}</b>{parcial_txt}</div>'
+                f'<div><span>Alvo final</span><b>{_moeda(op.alvo2)}</b><em>faltam {_num(falta, 2)}%</em></div>')
+    else:
+        ate_stop = abs(op.stop - preco) / preco * 100
+        meio = (f'<div><span>Alvo</span><b>{_moeda(op.alvo2)}</b><em>faltam {_num(falta, 2)}%</em></div>'
+                f'<div><span>Até o stop</span><b>{_num(ate_stop, 2)}%</b><em>sem parcial</em></div>')
+    if op.stop_movido:
+        stop_txt = "no zero a zero"
+    elif not tem_parcial:
+        stop_txt = "sai a mercado após tocar"
+    else:
+        stop_txt = f"risco de {_num(abs(op.stop - ent.preco) / ent.preco * 100, 2)}%"
     return (f'<div class="card opc"><div class="opc-h">{cab}<span class="sts {classe}">{icone}{lado_txt}</span></div>'
             f'<div class="opc-res"><div class="v {tom}">{_reais(resultado)}</div>'
             f'<div class="d">{_num(pct, 2, sufixo="%", sinal=True)} sobre a entrada · {_num(abs(op.qtd), 0)} de '
@@ -3238,8 +3252,7 @@ def _cartao_operacao(ativo: str, est, res, formando, erro: str | None) -> str:
             f'<div class="opc-g">'
             f'<div><span>Entrada</span><b>{_moeda(ent.preco)}</b><em>{_quando(ent.hora, dia)} · sinal {_quando(op.hora_sinal, dia)}</em></div>'
             f'<div><span>Preço atual</span><b>{_moeda(preco)}</b><em>candle das {ultimo.name:%H:%M}</em></div>'
-            f'<div><span>Parcial (1R)</span><b>{_moeda(op.alvo1)}</b>{parcial_txt}</div>'
-            f'<div><span>Alvo final</span><b>{_moeda(op.alvo2)}</b><em>faltam {_num(falta, 2)}%</em></div>'
+            f'{meio}'
             f'<div><span>Stop</span><b>{_moeda(op.stop)}</b><em>{stop_txt}</em></div>'
             f'<div><span>No pregão</span><b>{_reais(no_dia)}</b><em>{len(fechadas)} fechada(s)</em></div>'
             f"</div></div>")
@@ -3299,7 +3312,9 @@ def _grafico_operacao(res, formando):
     fim = d.index[-1] + pd.Timedelta(minutes=res.estrategia.minutos)
     op = res.aberta
     if op is not None and op.entrada is not None:
-        linhas = [(op.alvo2, "alvo", "#22C55E", "solid"), (op.alvo1, "parcial", "#22C55E", "dash")]
+        linhas = [(op.alvo2, "alvo", "#22C55E", "solid")]
+        if not pd.isna(op.alvo1):
+            linhas.append((op.alvo1, "parcial", "#22C55E", "dash"))
         if abs(op.stop - op.preco_sinal) >= 0.05:
             linhas.append((op.preco_sinal, "entrada", "#E2E8F0", "dot"))
         linhas.append((op.stop, "stop no zero a zero" if op.stop_movido else "stop", "#F05252", "solid"))
