@@ -433,7 +433,7 @@ class Bpac11(Pullback):
 
 class Bbas3(Pullback):
     """Pullback BBAS3 (Profit), 10 min: alvo de 1,5%, força da tendência acima de 0,35% do preço
-    (FiltroForcaMult: o código traz 0,0025, mas a lista do Profit só bate com ~0,0035),
+    (FiltroForcaMult 0,0035 no Profit, confirmado; o código enviado traz 0,0025),
     entrada até 14:00 e sem filtro de tamanho do stop. O código do Profit não pinta o candle do
     sinal; aqui ele é pintado mesmo assim, para o gráfico mostrar onde a operação começou."""
     ativo, nome, minutos, lote = "BBAS3", "Pullback BBAS3", 10, 100

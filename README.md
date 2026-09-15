@@ -311,8 +311,8 @@ gráfico de candles do pregão com as linhas da operação. Abre direto em
   - **leilão de fechamento dentro do último candle do pregão** e **after-market alinhado às
     17:30** (no BOVA11 de 60 min, sinal no candle das 16:00 entra às 17:30); o Yahoo perde o
     leilão nos pregões passados, e o painel o recria com o fechamento e o volume diários;
-  - **parâmetros configurados no Profit, diferentes do código enviado:** VALE3 com alvo
-    final em 2,5R (o código traz 1,85) e BBAS3 com filtro de força de ~0,0035 (o código
+  - **parâmetros configurados no Profit, diferentes do código enviado** (confirmados em 15/09/2026): VALE3 com alvo
+    final em 2,5R (o código traz 1,85) e BBAS3 com filtro de força de 0,0035 (o código
     traz 0,0025).
 
   O que ainda difere vem quase todo dos dados: o Yahoo não tem o after-market (o Profit roda
