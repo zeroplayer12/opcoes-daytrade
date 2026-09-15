@@ -311,7 +311,8 @@ class Pullback(Estrategia):
     inverso), pullback (a mínima deste candle ou do anterior tocou a média de 9;
     na venda, a máxima), volume acima da média de 20, candle a favor rompendo a
     máxima (mínima) do anterior e entrada só em candle até a hora limite. Alvo
-    fixo em %, sem parcial nem breakeven; stop técnico de 3 candles ± 0,03.
+    fixo em %, sem parcial nem breakeven; stop técnico no extremo dos últimos N
+    candles, com folga (3 candles ± 0,03 na BPAC11 e na BBAS3; 2 ± 0,05 no BOVA11).
     Filtros opcionais: tamanho máximo do stop (%) e força da tendência
     (distância entre as médias de 9 e 21 maior que uma fração do preço).
 
@@ -322,9 +323,10 @@ class Pullback(Estrategia):
     """
 
     def __init__(self, alvo_pct: float, hora_limite: int, max_stop_pct: float | None = None,
-                 filtro_forca: float | None = None):
+                 filtro_forca: float | None = None, stop_candles: int = 3, stop_folga: float = 0.03):
         self.alvo_pct, self.hora_limite = alvo_pct, hora_limite
         self.max_stop, self.filtro_forca = max_stop_pct, filtro_forca
+        self.stop_candles, self.stop_folga = stop_candles, stop_folga
 
     def indicadores(self, df: pd.DataFrame) -> pd.DataFrame:
         c, h, l, o = df["close"], df["high"], df["low"], df["open"]
@@ -340,8 +342,8 @@ class Pullback(Estrategia):
             comum &= (x["ema9"] - x["ema21"]).abs() > c * self.filtro_forca
         # Time do NTSL: HHMM do candle (abertura) — a conferir contra o Profit
         comum &= pd.Series(df.index.hour * 100 + df.index.minute, index=df.index) <= self.hora_limite
-        x["stop_compra"] = l.rolling(3).min() - 0.03
-        x["stop_venda"] = h.rolling(3).max() + 0.03
+        x["stop_compra"] = l.rolling(self.stop_candles).min() - self.stop_folga
+        x["stop_venda"] = h.rolling(self.stop_candles).max() + self.stop_folga
         ok_c = ok_v = True
         if self.max_stop:
             ok_c = (c - x["stop_compra"]) / c <= self.max_stop / 100
@@ -386,7 +388,22 @@ class Bbas3(Pullback):
         super().__init__(alvo_pct, hora_limite, filtro_forca=filtro_forca)
 
 
-ESTRATEGIAS: dict[str, Estrategia] = {"VALE3": Vale3(), "PETR4": Petr4(), "BBAS3": Bbas3(), "BPAC11": Bpac11()}
+class Bova11(Pullback):
+    """Pullback BOVA11 (Profit), 60 min: alvo de 2,3%, stop na mínima (máxima) dos 2 últimos candles
+    ± 0,05 limitado a 1,85%, força da tendência acima de 0,15% do preço e entrada até o candle das
+    16:00 (o último do pregão, então a entrada pode ficar para a abertura do dia seguinte). O código
+    do Profit não pinta o candle do sinal; aqui ele é pintado mesmo assim."""
+    ativo, nome, minutos, lote = "BOVA11", "Pullback BOVA11", 60, 100
+    ultimo_candle = "16:00"
+
+    def __init__(self, alvo_pct: float = 2.30, max_stop_pct: float = 1.85, filtro_forca: float = 0.0015,
+                 hora_limite: int = 1600):
+        super().__init__(alvo_pct, hora_limite, max_stop_pct=max_stop_pct, filtro_forca=filtro_forca,
+                         stop_candles=2, stop_folga=0.05)
+
+
+ESTRATEGIAS: dict[str, Estrategia] = {"BOVA11": Bova11(), "VALE3": Vale3(), "PETR4": Petr4(), "BBAS3": Bbas3(),
+                                      "BPAC11": Bpac11()}
 
 
 # =============================================================================

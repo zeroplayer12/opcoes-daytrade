@@ -3262,7 +3262,8 @@ def _cartao_pendentes(ativos: list[str]) -> str:
     """Os ativos ainda sem estratégia cadastrada, num cartão só."""
     chips = "".join(f'<span class="chip">{a}</span>' for a in ativos)
     return (f'<div class="card opc pendente"><div class="opc-h"><div><span class="opc-t">Aguardando código</span>'
-            f'<span class="opc-e">{len(ativos)} ativos sem estratégia cadastrada</span></div></div>'
+            f'<span class="opc-e">{len(ativos)} {"ativo" if len(ativos) == 1 else "ativos"} sem estratégia '
+            f'cadastrada</span></div></div>'
             f'<div class="chips-l">{chips}</div>'
             f'<p class="opc-vazio">Mande o código de cada estratégia do Profit, com o tempo gráfico, e o ativo '
             f"ganha um cartão próprio aqui.</p></div>")
