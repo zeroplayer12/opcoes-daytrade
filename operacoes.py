@@ -483,10 +483,12 @@ class Bova11(Pullback):
     ativo, nome, minutos = "BOVA11", "Pullback BOVA11", 60
     ultimo_candle = "16:00"
 
+    # zero a zero ao fechar a 70% do caminho até o alvo desde 15/09/2026 (backtest de 2022 a 2026,
+    # 200 cotas: R$ 14.490 × 13.838, queda topo-fundo R$ 3.932 × 4.992); gatilho_be=0 = a anterior
     def __init__(self, alvo_pct: float = 2.30, max_stop_pct: float = 1.85, filtro_forca: float = 0.0015,
-                 hora_limite: int = 1600):
+                 hora_limite: int = 1600, gatilho_be: float = 0.7):
         super().__init__(alvo_pct, hora_limite, max_stop_pct=max_stop_pct, filtro_forca=filtro_forca,
-                         stop_candles=2, stop_folga=0.05)
+                         stop_candles=2, stop_folga=0.05, gatilho_be=gatilho_be)
 
 
 class Itub4(Estrategia):

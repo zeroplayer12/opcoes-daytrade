@@ -346,6 +346,11 @@ gráfico de candles do pregão com as linhas da operação. Abre direto em
   antiga (parcial fixa de 50 ações em 2R, que não executa, e zero a zero no toque da 2R):
   fator de lucro 3,33 × 3,21 e queda topo-fundo R$ 202 × 288. São só 57 operações, então a
   vantagem é pequena. `Itub4(gatilho_be=0)` volta à gestão antiga.
+- **BOVA11 com zero a zero a 70% (15/09/2026):** no backtest de 01/01/2022 a 15/09/2026 (200
+  cotas), stop no zero a zero quando um candle fecha a 70% do caminho até o alvo deu R$ 14.490
+  contra R$ 13.838 da original, fator de lucro 1,49 × 1,43 e queda topo-fundo R$ 3.932 × 4.992,
+  com a mesma maior perda (R$ 866, de gap). A 50% ficou abaixo da original no saldo, e a parcial
+  de 50% rendeu 36% menos com queda maior. `Bova11(gatilho_be=0)` volta à anterior.
 - **Tempo real pelo Profit:** o `coletor_rtd.py` lê as cotações dos 6 ativos no servidor
   RTD do Profit (o mesmo do Excel: `=RTD("RTDTrading.RTDServer";; "VALE3_B_0"; "ULT")`,
   campos ULT, QTT, VOL, NEG e HOR) e grava cada mudança em `dados_rt/AAAA-MM-DD.csv`.
