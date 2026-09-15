@@ -500,7 +500,11 @@ class Itub4(Estrategia):
     das 13:00. Stop na mínima de 4 candles − 0,02, com risco de até 1,35% (MaxStopPercent
     configurado no Profit; o código enviado traz 1,40).
 
-    Gestão: parcial de 50 ações em 2R (fixa no código, não é metade da posição);
+    Gestão desde 15/09/2026 (V1 do backtest de 2022 a 2026): alvo final de 4,4R desde a
+    entrada e stop no zero a zero quando um candle fecha a 50% do caminho até ele, sem
+    parcial. Com `gatilho_be=0`, volta a gestão antiga:
+
+    Gestão antiga: parcial de 50 ações em 2R (fixa no código, não é metade da posição);
     quando a máxima de um candle toca a 2R, o stop vai para o zero a zero e o alvo
     final (4,4R) entra. O stop sai a mercado no candle seguinte ao toque. As 50 ações
     ficam fora do lote padrão de 100: no Profit a parcial nunca executa (nas operações
@@ -514,14 +518,15 @@ class Itub4(Estrategia):
     ativo, nome, minutos = "ITUB4", "Execução ITUB4", 15
 
     @property
-    def qtd_da_parcial(self) -> float:
-        return self.qtd_parcial
+    def qtd_da_parcial(self) -> float | None:
+        return None if self.gatilho_be else self.qtd_parcial
     stop_antes_do_breakeven = True
     ultimo_candle = "16:45"
 
     def __init__(self, fator_parcial: float = 2.00, fator_alvo: float = 4.40, max_stop_pct: float = 1.35,
-                 min_stop_pct: float = 0.0, hora_limite: int = 1300, qtd_parcial: int = 50):
-        self.fator_parcial, self.fator_alvo = fator_parcial, fator_alvo
+                 min_stop_pct: float = 0.0, hora_limite: int = 1300, qtd_parcial: int = 50,
+                 gatilho_be: float = 0.5):
+        self.fator_parcial, self.fator_alvo, self.gatilho_be = fator_parcial, fator_alvo, gatilho_be
         self.max_stop, self.min_stop, self.hora_limite, self.qtd_parcial = max_stop_pct, min_stop_pct, hora_limite, qtd_parcial
         self.reiniciar()
 
@@ -559,13 +564,22 @@ class Itub4(Estrategia):
             if b["sinal_compra"] and not self._ja_operou:
                 entrada, stop = b["close"], b["stop_compra"]
                 risco = entrada - stop
-                nova = Operacao(1, b.name, entrada, stop, entrada + risco * self.fator_parcial,
+                nova = Operacao(1, b.name, entrada, stop,
+                                NAN if self.gatilho_be else entrada + risco * self.fator_parcial,
                                 entrada + risco * self.fator_alvo, stop=stop)
                 self._ja_operou = True
                 return [Ordem("mercado", 1, self.lote, rotulo="entrada")], "verde", nova
             return [], None, None
         if self.stop_antes_do_breakeven and b["low"] <= op.stop:
             return [Ordem("mercado", -1, None, rotulo="stop")], None, None
+        if self.gatilho_be:
+            # gestão nova: alvo final desde a entrada; zero a zero quando um candle fecha a
+            # `gatilho_be` do caminho até ele (vale do próximo candle em diante)
+            if b["low"] <= op.stop:
+                return [Ordem("mercado", -1, None, rotulo="stop")], None, None
+            if not op.stop_movido and b["close"] >= op.preco_sinal + (op.alvo2 - op.preco_sinal) * self.gatilho_be:
+                op.stop, op.stop_movido = op.preco_sinal + 0.01, True
+            return [Ordem("limite", -1, None, op.alvo2, "alvo")], None, None
         ordens = []
         if not op.parcial_feita:
             ordens.append(Ordem("limite", -1, self.qtd_parcial, op.alvo1, "parcial"))

@@ -340,6 +340,12 @@ gráfico de candles do pregão com as linhas da operação. Abre direto em
   menor (38% × 45%) e sequências de perda mais longas. O lucro por operação maior é o que
   mais pesa: os custos da B3 comem boa parte dos R$ 6,79 do original. O zero a zero quase
   não muda o resultado; ficou porque foi a combinação testada.
+- **ITUB4 com zero a zero a 50% (15/09/2026):** no backtest de 01/01/2022 a 15/09/2026 (200
+  ações, risco máximo de 1,35%), alvo final de 4,4R desde a entrada e stop no zero a zero
+  quando um candle fecha a 50% do caminho até ele deu R$ 2.960 contra R$ 2.660 da gestão
+  antiga (parcial fixa de 50 ações em 2R, que não executa, e zero a zero no toque da 2R):
+  fator de lucro 3,33 × 3,21 e queda topo-fundo R$ 202 × 288. São só 57 operações, então a
+  vantagem é pequena. `Itub4(gatilho_be=0)` volta à gestão antiga.
 - **Tempo real pelo Profit:** o `coletor_rtd.py` lê as cotações dos 6 ativos no servidor
   RTD do Profit (o mesmo do Excel: `=RTD("RTDTrading.RTDServer";; "VALE3_B_0"; "ULT")`,
   campos ULT, QTT, VOL, NEG e HOR) e grava cada mudança em `dados_rt/AAAA-MM-DD.csv`.
