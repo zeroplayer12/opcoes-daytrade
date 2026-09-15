@@ -361,7 +361,7 @@ gráfico de candles do pregão com as linhas da operação. Abre direto em
   RTD do Profit (o mesmo do Excel: `=RTD("RTDTrading.RTDServer";; "VALE3_B_0"; "ULT")`,
   campos ULT, QTT, VOL, NEG e HOR) e grava cada mudança em `dados_rt/AAAA-MM-DD.csv`.
   A aba monta as barras de 5 min de cada pregão gravado (com leilão e after-market, até
-  18:30) e atualiza a cada 5 s. Ele sobe
+  18:30) e atualiza a cada 1 minuto. Ele sobe
   junto com o painel (`iniciar-painel.cmd`), espera o Profit abrir, reconecta se o
   Profit fechar, roda uma instância só e registra tudo em `coletor.log`; o
   `parar-painel.cmd` encerra os dois.

@@ -3401,7 +3401,7 @@ def pagina_operacoes(cabecalho) -> None:
     with st.sidebar:
         _sb("Operações", primeiro=True)
         auto = st.toggle("Atualizar sozinho", key="auto_ops",
-                         help="A cada 5 s com o Profit ao vivo; a cada 30 s com os dados do Yahoo.")
+                         help="A cada 1 minuto, com o Profit ao vivo ou com os dados do Yahoo.")
         _sb("Sobre os dados")
         st.caption("As estratégias são traduções do código do Profit. Sinal no fechamento do candle e entrada "
                    "na abertura do seguinte, como no backtest do Profit; a posição segue de um pregão para o "
@@ -3416,10 +3416,10 @@ def pagina_operacoes(cabecalho) -> None:
         fonte = f'<span class="pill"><span class="dot off"></span><b>Profit</b> · pregão encerrado ({hora})</span>'
     else:
         fonte = f'<span class="pill">{_ic("fonte")}<b>Yahoo Finance</b> · atraso de ~15 min</span>'
-    ritmo = 5 if estado == "vivo" else 30
+    ritmo = 60          # segundos; a pedido, 1 minuto (antes 5 s com o Profit ao vivo)
     _html(_moldura("Suas estratégias do Profit: posição, alvo, parcial, stop e resultado",
                    fonte + f'<span class="pill">{_ic("relogio")}'
-                   + (f"Atualiza a cada <b>{ritmo} s</b>" if auto else "Atualização <b>manual</b>") + "</span>"),
+                   + ("Atualiza a cada <b>1 min</b>" if auto else "Atualização <b>manual</b>") + "</span>"),
           cabecalho)
     st.fragment(_painel_operacoes, run_every=ritmo if auto else None)()
     _rodape("Sinais recalculados a partir do código das estratégias do Profit — confira no Profit antes de agir.")
