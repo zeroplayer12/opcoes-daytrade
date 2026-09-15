@@ -279,8 +279,11 @@ gráfico de candles do pregão com as linhas da operação. Abre direto em
 `http://localhost:8501/?aba=operacoes`.
 
 - **As estratégias são traduzidas** do código do Profit para `operacoes.py` (hoje: VALE3
-  em 10 min, PETR4 em 20 min, BPAC11 em 15 min, BBAS3 em 10 min e BOVA11 em 60 min;
-  BPAC11, BBAS3 e BOVA11 são a mesma família de pullback, com parâmetros diferentes). Pontos que ainda
+  em 10 min, PETR4 em 20 min, BPAC11 em 15 min, BBAS3 em 10 min, BOVA11 em 60 min e ITUB4
+  em 15 min; BPAC11, BBAS3 e BOVA11 são a mesma família de pullback, com parâmetros
+  diferentes). A ITUB4 só compra e faz no máximo uma operação por dia; fiel ao código, a
+  ordem da parcial é reenviada no candle em que foi executada e pode vender a outra metade
+  no preço da parcial no candle seguinte. Pontos que ainda
   dependem da conferência: na PETR4, `ADX(14, 0)` foi lido como ADX sem suavização (o
   próprio DX) e `RSI(14, 0)` como o IFR clássico de Wilder; na BPAC11 e na BBAS3, `Time`
   como o horário de abertura do candle (entrada até o candle das 16:30 e das 14:00).

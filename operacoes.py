@@ -21,6 +21,7 @@ passado de um dos dois.
 """
 from __future__ import annotations
 
+import copy
 import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -178,6 +179,9 @@ class Estrategia:
 
     def indicadores(self, df: pd.DataFrame) -> pd.DataFrame:
         raise NotImplementedError
+
+    def reiniciar(self) -> None:
+        """Zera as variáveis que o NTSL guarda de um candle para o outro (fora da posição)."""
 
     def no_fechamento(self, barra: pd.Series, op: Operacao | None) -> tuple[list[Ordem], str | None, Operacao | None]:
         """Devolve (ordens para o próximo candle, cor do candle, operação nova se houver sinal)."""
@@ -402,8 +406,84 @@ class Bova11(Pullback):
                          stop_candles=2, stop_folga=0.05)
 
 
+class Itub4(Estrategia):
+    """Estratégia ITUB4 15 min (Profit): só compra, no máximo uma operação por dia.
+
+    Tendência (fechamento acima das médias de 200 e de 50, média de 9 acima da de
+    21), pullback profundo (a mínima tocou a média de 9 sem perder 0,2% abaixo da
+    de 21), IFR(14) entre 50 e 68, fechamento no terço superior do candle (65% da
+    amplitude), volume acima da média de 20, true range acima de 105% da sua média
+    de 20, candle de alta rompendo a máxima do anterior e entrada só até o candle
+    das 13:00. Stop na mínima de 4 candles − 0,02, com risco de até 1,40%.
+
+    Gestão: parcial de 50 ações em 2R; quando a máxima de um candle toca a 2R, o
+    stop vai para o zero a zero e o alvo final (4,4R) entra. O stop sai a mercado
+    no candle seguinte ao toque. Como no código original, a ordem da parcial é
+    reenviada no fechamento do candle em que ela foi executada — se o preço seguir
+    acima da 2R no candle seguinte, a outra metade também sai na parcial.
+    """
+    ativo, nome, minutos, lote = "ITUB4", "Execução ITUB4", 15, 100
+    ultimo_candle = "16:45"
+
+    def __init__(self, fator_parcial: float = 2.00, fator_alvo: float = 4.40, max_stop_pct: float = 1.40,
+                 min_stop_pct: float = 0.0, hora_limite: int = 1300, qtd_parcial: int = 50):
+        self.fator_parcial, self.fator_alvo = fator_parcial, fator_alvo
+        self.max_stop, self.min_stop, self.hora_limite, self.qtd_parcial = max_stop_pct, min_stop_pct, hora_limite, qtd_parcial
+        self.reiniciar()
+
+    def reiniciar(self) -> None:
+        self._dia, self._ja_operou = None, False
+
+    def indicadores(self, df: pd.DataFrame) -> pd.DataFrame:
+        c, h, l, o = df["close"], df["high"], df["low"], df["open"]
+        x = pd.DataFrame(index=df.index)
+        x["ema9"], x["ema21"], x["ema50"] = media_exp(c, 9), media_exp(c, 21), media_exp(c, 50)
+        x["ema200"] = media_exp(c, 200)
+        x["rsi"] = rsi(c, 14)
+        x["vol_media"] = media(df["volume"], 20)
+        x["tr"] = pd.concat([h, c.shift()], axis=1).max(axis=1) - pd.concat([l, c.shift()], axis=1).min(axis=1)
+        x["tr_media"] = media(x["tr"], 20)
+        tendencia = (c > x["ema200"]) & (c > x["ema50"]) & (x["ema9"] > x["ema21"])
+        pullback = (l <= x["ema9"]) & (l >= x["ema21"] * 0.998)
+        amplitude = h - l
+        fecha_alto = ((c - l) / amplitude.where(amplitude > 0)) >= 0.65
+        x["stop_compra"] = l.rolling(4).min() - 0.02
+        risco_pct = (c - x["stop_compra"]) / c * 100
+        # Time do NTSL: HHMM do candle (abertura) — a conferir contra o Profit
+        no_horario = pd.Series(df.index.hour * 100 + df.index.minute, index=df.index) <= self.hora_limite
+        x["sinal_compra"] = (tendencia & pullback & (x["rsi"] >= 50) & (x["rsi"] <= 68) & fecha_alto.fillna(False)
+                             & (df["volume"] > x["vol_media"]) & (x["tr"] > x["tr_media"] * 1.05)
+                             & (risco_pct <= self.max_stop) & (risco_pct >= self.min_stop)
+                             & (c > o) & (c > h.shift(1)) & no_horario)
+        x["sinal_venda"] = False
+        return x
+
+    def no_fechamento(self, b: pd.Series, op: Operacao | None):
+        if b.name.date() != self._dia:                       # controle de 1 operação por dia
+            self._dia, self._ja_operou = b.name.date(), False
+        if op is None:
+            if b["sinal_compra"] and not self._ja_operou:
+                entrada, stop = b["close"], b["stop_compra"]
+                risco = entrada - stop
+                nova = Operacao(1, b.name, entrada, stop, entrada + risco * self.fator_parcial,
+                                entrada + risco * self.fator_alvo, stop=stop)
+                self._ja_operou = True
+                return [Ordem("mercado", 1, self.lote, rotulo="entrada")], "verde", nova
+            return [], None, None
+        ordens = []
+        if not op.parcial_feita:
+            ordens.append(Ordem("limite", -1, self.qtd_parcial, op.alvo1, "parcial"))
+            if b["high"] >= op.alvo1:
+                op.parcial_feita, op.stop, op.stop_movido = True, op.preco_sinal + 0.01, True
+        if op.parcial_feita:
+            ordens.append(Ordem("limite", -1, None, op.alvo2, "alvo"))
+        if b["low"] <= op.stop:
+            ordens.append(Ordem("mercado", -1, None, rotulo="stop"))
+        return ordens, None, None
+
+
 ESTRATEGIAS: dict[str, Estrategia] = {"BOVA11": Bova11(), "VALE3": Vale3(), "PETR4": Petr4(), "BBAS3": Bbas3(),
-                                      "BPAC11": Bpac11()}
+                                      "ITUB4": Itub4(), "BPAC11": Bpac11()}
 
 
 # =============================================================================
@@ -430,6 +510,8 @@ def simular(est: Estrategia, df: pd.DataFrame, zerar_no_fim_do_dia: bool | None 
     nesse candle (day trade).
     """
     zerar = est.zera_no_fim_do_dia if zerar_no_fim_do_dia is None else zerar_no_fim_do_dia
+    est = copy.copy(est)      # estado próprio: simulações simultâneas não se atrapalham
+    est.reiniciar()
     x = est.indicadores(df)
     dados = df.join(x)
     dados["cor"] = None
