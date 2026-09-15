@@ -279,12 +279,14 @@ gráfico de candles do pregão com as linhas da operação. Abre direto em
 `http://localhost:8501/?aba=operacoes`.
 
 - **As estratégias são traduzidas** do código do Profit para `operacoes.py` (hoje: VALE3
-  em 10 min, PETR4 em 20 min e BPAC11 em 15 min). Pontos que ainda dependem da
-  conferência: na PETR4, `ADX(14, 0)` foi lido como ADX sem suavização (o próprio DX) e
-  `RSI(14, 0)` como o IFR clássico de Wilder; na BPAC11, `Time` como o horário de
-  abertura do candle (entrada só até o candle das 16:30). Na BPAC11 o stop não é ordem
-  stop — o toque no nível fecha a posição a mercado no candle seguinte — e a saída das
-  17:40 do código nunca dispara (compara `Time`, em HHMM, com `174000`). A simulação segue o backtest do Profit: o código roda no fechamento do candle,
+  em 10 min, PETR4 em 20 min, BPAC11 em 15 min e BBAS3 em 10 min). Pontos que ainda
+  dependem da conferência: na PETR4, `ADX(14, 0)` foi lido como ADX sem suavização (o
+  próprio DX) e `RSI(14, 0)` como o IFR clássico de Wilder; na BPAC11 e na BBAS3, `Time`
+  como o horário de abertura do candle (entrada até o candle das 16:30 e das 14:00).
+  Nessas duas o stop não é ordem stop — o toque no nível fecha a posição a mercado no
+  candle seguinte — e a saída das 17:40 do código nunca dispara (compara `Time`, em HHMM,
+  com `174000`). O código da BBAS3 não pinta o candle do sinal; o painel pinta mesmo
+  assim, para o gráfico mostrar onde a operação começou. A simulação segue o backtest do Profit: o código roda no fechamento do candle,
   a entrada é na abertura do candle seguinte e ordens de saída valem só para o próximo
   candle. A posição **não é zerada às 17h**: segue de um pregão para o outro até o alvo
   ou o stop, como nas estratégias do Profit — por isso a simulação parte de 60 dias de

@@ -304,26 +304,27 @@ class Petr4(Estrategia):
         return self._gerenciar(b, op, self.fator_parcial), None, None
 
 
-class Bpac11(Estrategia):
-    """Pullback BPAC11 (Profit), 15 minutos.
+class Pullback(Estrategia):
+    """Família "pullback na média de 9" (BPAC11, BBAS3).
 
     Tendência (fechamento acima da média de 50 e média de 9 acima da de 21, ou o
     inverso), pullback (a mínima deste candle ou do anterior tocou a média de 9;
     na venda, a máxima), volume acima da média de 20, candle a favor rompendo a
-    máxima (mínima) do anterior, stop técnico de 3 candles ± 0,03 a no máximo
-    1,65%, e entrada só em candle até 16:30. Alvo fixo de 1,3%, sem parcial nem
-    breakeven.
+    máxima (mínima) do anterior e entrada só em candle até a hora limite. Alvo
+    fixo em %, sem parcial nem breakeven; stop técnico de 3 candles ± 0,03.
+    Filtros opcionais: tamanho máximo do stop (%) e força da tendência
+    (distância entre as médias de 9 e 21 maior que uma fração do preço).
 
     O stop não é ordem stop: se a mínima (na venda, a máxima) de um candle toca o
     nível, a posição sai a mercado na abertura do candle seguinte. A saída das
     17:40 do código compara Time (HHMM) com 174000 e nunca dispara, então a
     posição segue para o dia seguinte, como nas outras estratégias.
     """
-    ativo, nome, minutos, lote = "BPAC11", "Pullback BPAC11", 15, 100
-    ultimo_candle = "16:45"
 
-    def __init__(self, alvo_pct: float = 1.3, max_stop_pct: float = 1.65, hora_limite: int = 1630):
-        self.alvo_pct, self.max_stop, self.hora_limite = alvo_pct, max_stop_pct, hora_limite
+    def __init__(self, alvo_pct: float, hora_limite: int, max_stop_pct: float | None = None,
+                 filtro_forca: float | None = None):
+        self.alvo_pct, self.hora_limite = alvo_pct, hora_limite
+        self.max_stop, self.filtro_forca = max_stop_pct, filtro_forca
 
     def indicadores(self, df: pd.DataFrame) -> pd.DataFrame:
         c, h, l, o = df["close"], df["high"], df["low"], df["open"]
@@ -334,15 +335,19 @@ class Bpac11(Estrategia):
         baixa = (c < x["ema50"]) & (x["ema9"] < x["ema21"])
         pullback_alta = (l <= x["ema9"]) | (l.shift(1) <= x["ema9"])
         pullback_baixa = (h >= x["ema9"]) | (h.shift(1) >= x["ema9"])
-        volume = df["volume"] > x["vol_media"]
+        comum = df["volume"] > x["vol_media"]
+        if self.filtro_forca:
+            comum &= (x["ema9"] - x["ema21"]).abs() > c * self.filtro_forca
+        # Time do NTSL: HHMM do candle (abertura) — a conferir contra o Profit
+        comum &= pd.Series(df.index.hour * 100 + df.index.minute, index=df.index) <= self.hora_limite
         x["stop_compra"] = l.rolling(3).min() - 0.03
         x["stop_venda"] = h.rolling(3).max() + 0.03
-        stop_ok_c = (c - x["stop_compra"]) / c <= self.max_stop / 100
-        stop_ok_v = (x["stop_venda"] - c) / c <= self.max_stop / 100
-        # Time do NTSL: HHMM do candle (abertura) — a conferir contra o Profit
-        no_horario = pd.Series(df.index.hour * 100 + df.index.minute, index=df.index) <= self.hora_limite
-        x["sinal_compra"] = alta & pullback_alta & volume & stop_ok_c & (c > o) & (c > h.shift(1)) & no_horario
-        x["sinal_venda"] = baixa & pullback_baixa & volume & stop_ok_v & (c < o) & (c < l.shift(1)) & no_horario
+        ok_c = ok_v = True
+        if self.max_stop:
+            ok_c = (c - x["stop_compra"]) / c <= self.max_stop / 100
+            ok_v = (x["stop_venda"] - c) / c <= self.max_stop / 100
+        x["sinal_compra"] = alta & pullback_alta & comum & ok_c & (c > o) & (c > h.shift(1))
+        x["sinal_venda"] = baixa & pullback_baixa & comum & ok_v & (c < o) & (c < l.shift(1))
         return x
 
     def no_fechamento(self, b: pd.Series, op: Operacao | None):
@@ -362,7 +367,26 @@ class Bpac11(Estrategia):
         return ordens, None, None
 
 
-ESTRATEGIAS: dict[str, Estrategia] = {"VALE3": Vale3(), "PETR4": Petr4(), "BPAC11": Bpac11()}
+class Bpac11(Pullback):
+    """Pullback BPAC11 (Profit), 15 min: alvo de 1,3%, stop limitado a 1,65%, entrada até 16:30."""
+    ativo, nome, minutos, lote = "BPAC11", "Pullback BPAC11", 15, 100
+    ultimo_candle = "16:45"
+
+    def __init__(self, alvo_pct: float = 1.3, max_stop_pct: float = 1.65, hora_limite: int = 1630):
+        super().__init__(alvo_pct, hora_limite, max_stop_pct=max_stop_pct)
+
+
+class Bbas3(Pullback):
+    """Pullback BBAS3 (Profit), 10 min: alvo de 1,5%, força da tendência acima de 0,25% do preço,
+    entrada até 14:00 e sem filtro de tamanho do stop. O código do Profit não pinta o candle do
+    sinal; aqui ele é pintado mesmo assim, para o gráfico mostrar onde a operação começou."""
+    ativo, nome, minutos, lote = "BBAS3", "Pullback BBAS3", 10, 100
+
+    def __init__(self, alvo_pct: float = 1.5, filtro_forca: float = 0.0025, hora_limite: int = 1400):
+        super().__init__(alvo_pct, hora_limite, filtro_forca=filtro_forca)
+
+
+ESTRATEGIAS: dict[str, Estrategia] = {"VALE3": Vale3(), "PETR4": Petr4(), "BBAS3": Bbas3(), "BPAC11": Bpac11()}
 
 
 # =============================================================================
