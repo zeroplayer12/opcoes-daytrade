@@ -497,7 +497,8 @@ class Itub4(Estrategia):
     de 21), IFR(14) entre 50 e 68, fechamento no terço superior do candle (65% da
     amplitude), volume acima da média de 20, true range acima de 105% da sua média
     de 20, candle de alta rompendo a máxima do anterior e entrada só até o candle
-    das 13:00. Stop na mínima de 4 candles − 0,02, com risco de até 1,40%.
+    das 13:00. Stop na mínima de 4 candles − 0,02, com risco de até 1,35% (MaxStopPercent
+    configurado no Profit; o código enviado traz 1,40).
 
     Gestão: parcial de 50 ações em 2R (fixa no código, não é metade da posição);
     quando a máxima de um candle toca a 2R, o stop vai para o zero a zero e o alvo
@@ -518,7 +519,7 @@ class Itub4(Estrategia):
     stop_antes_do_breakeven = True
     ultimo_candle = "16:45"
 
-    def __init__(self, fator_parcial: float = 2.00, fator_alvo: float = 4.40, max_stop_pct: float = 1.40,
+    def __init__(self, fator_parcial: float = 2.00, fator_alvo: float = 4.40, max_stop_pct: float = 1.35,
                  min_stop_pct: float = 0.0, hora_limite: int = 1300, qtd_parcial: int = 50):
         self.fator_parcial, self.fator_alvo = fator_parcial, fator_alvo
         self.max_stop, self.min_stop, self.hora_limite, self.qtd_parcial = max_stop_pct, min_stop_pct, hora_limite, qtd_parcial
