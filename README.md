@@ -370,7 +370,47 @@ gráfico de candles do pregão com as linhas da operação. Abre direto em
   18:30) e atualiza a cada 1 minuto. Ele sobe
   junto com o painel (`iniciar-painel.cmd`), espera o Profit abrir, reconecta se o
   Profit fechar, roda uma instância só e registra tudo em `coletor.log`; o
-  `parar-painel.cmd` encerra os dois.
+  `parar-painel.cmd` encerra o painel, o coletor e o vigia.
+- **O servidor RTD do Profit atende um cliente por vez:** outro programa que se conectar
+  (um teste, um segundo coletor) toma a conexão, e o primeiro para de receber sem aviso nenhum
+  (visto em 15/09/2026). Por isso, no pregão, o coletor reconecta sozinho se passar 3 minutos
+  sem cotação nova — e qualquer leitura nova do RTD tem de entrar no próprio coletor.
+- **Opção ao vivo (15/09/2026):** o opcoes.net.br grátis mostra o último negócio, muitas vezes
+  do pregão anterior. O painel e o vigia anotam em `dados_rt/opcoes/assinar.json` a opção
+  sugerida de cada posição, e o coletor assina ela também no RTD — o Profit entrega opção sem
+  cadastrar na lista, com último (`ULT`), melhor compra (`OCP`) e melhor venda (`OVD`) — e grava
+  em `dados_rt/opcoes/` (um CSV por pregão e `agora.json` com a última de cada uma). O cartão
+  mostra "ao vivo", usa o meio do book como preço de agora e tira dele a volatilidade
+  implícita com que estima a parcial, o alvo e o stop. Sem o coletor (ou na nuvem), a
+  cotação vem do site da B3 (`InstrumentQuotation`, ~15 min de atraso, com a ação do mesmo
+  instante); sem as duas, do opcoes.net.br.
+- **Avisos (15/09/2026):** sinal, parcial, zero a zero, stop tocado e saída das 5 estratégias
+  recomendadas (VALE3, PETR4, BPAC11, ITUB4 e BOVA11) avisam em três lugares:
+  - **no navegador:** balão na aba Operações, três bipes e o título da aba piscando, com a
+    atualização automática ligada (chega em até 1 min) e a faixa "Avisos de hoje" acima dos
+    cartões;
+  - **no Windows e no Telegram:** pelo `vigia.py`, que sobe junto com o painel e roda com o
+    navegador fechado — recalcula as estratégias a cada 15 s no pregão com o mesmo código da
+    aba e, no sinal, manda a opção sugerida com o preço agora, no alvo e no stop. Ao ligar, só
+    avisa o que aconteceu nos últimos 15 min; o que já foi avisado fica em
+    `dados_rt/vigia_estado.json`. Log em `vigia.log`; `python vigia.py --uma` mostra os avisos
+    dos últimos dias sem enviar e `--teste` manda um de teste;
+  - o botão **Testar avisos** na barra lateral testa os três de uma vez.
+
+  O Telegram liga com `python configurar_telegram.py`: você cria o bot no @BotFather, cola o
+  token (a digitação não aparece) e manda uma mensagem ao bot para o script descobrir o seu
+  chat. A configuração (ativos avisados, Windows ligado, token) fica em
+  `%LOCALAPPDATA%\PainelDayTrade\avisos.json`, fora do OneDrive e do Git. A notificação do
+  Windows sai pelo PowerShell (aparece como "Windows PowerShell") e o *Assistente de foco* /
+  *Não perturbe* do Windows pode segurá-la.
+- **Resultado mês a mês (15/09/2026):** a seção no fim da aba mostra, mês a mês desde 2022, quanto
+  as 5 estratégias recomendadas teriam dado — calendário por ano, total da carteira ou de uma
+  estratégia, e a tabela com todas elas num expander. Vem do `resultados.py`: o motor do painel
+  rodando sobre os candles que o próprio Profit guarda no disco
+  (`%APPDATA%\Nelogica\Profit_Profit-cm\database`, arquivos `.min` de 128 bytes por candle, preço
+  bruto, ajustado aqui por desdobramentos e proventos), 200 ações, sem custos. O vigia refaz a
+  conta todo dia depois das 18:40 (~30 s); à mão, `python resultados.py`. É resultado em ações:
+  com a opção, o ganho acompanha o delta e a opção perde valor com o tempo.
 - **Exige no Profit:** *Exportação em Tempo Real (RTD / DDE)* com o RTD ativado e os 6
   ativos na lista. Com o RTD desligado, o servidor quebra ao receber o pedido.
 - **Sem o coletor** (ou no Streamlit Cloud), o pregão de hoje vem do Yahoo, com cerca de
@@ -378,7 +418,7 @@ gráfico de candles do pregão com as linhas da operação. Abre direto em
   começar com o pregão andando, as barras anteriores a ele também ficam com o Yahoo.
 - Máxima e mínima de cada barra saem das cotações anotadas, então um pico entre duas
   atualizações pode escapar.
-- Resultado em R$ para o lote de cada estratégia (100 ações), sem custos.
+- Resultado em R$ para o lote de 200 ações, sem custos.
 
 ## Robustez a mudança de colunas
 

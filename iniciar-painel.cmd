@@ -10,6 +10,9 @@ rem Coletor das cotacoes do Profit (RTD) para a aba Operacoes. Uma instancia so:
 rem se ja houver um rodando, o novo sai sozinho. Log em coletor.log.
 start "" /b "%PY%" coletor_rtd.py
 
+rem Vigia dos sinais: avisa no Windows e no Telegram (avisos.py). Uma instancia so.
+start "" /b "%PY%" vigia.py
+
 :laco
 rem Uma instancia so: se a porta ja esta servida, esta sai em vez de insistir.
 rem O aviso vai para painel.inicio.log porque o painel.log fica aberto pelo

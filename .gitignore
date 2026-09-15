@@ -11,6 +11,8 @@ env/
 # Segredos do Streamlit (NUNCA commitar)
 .streamlit/secrets.toml
 .env
+# configuração dos avisos (token do Telegram) — o padrão é gravar fora da pasta, em %LOCALAPPDATA%
+avisos.json
 
 # Grades exportadas do opcoes.net.br — dados de mercado, não vão pro repo
 *.csv

@@ -14,6 +14,15 @@ voltar. Um coletor só por vez (mutex nomeado). Log em coletor.log.
 Exige no Profit: Exportação em Tempo Real (RTD / DDE) com RTD ativado e os
 ativos cadastrados na lista.
 
+Opções: o painel e o vigia anotam em dados_rt/opcoes/assinar.json as opções sugeridas
+nos sinais do dia; o coletor assina essas também (último, melhor compra e melhor venda —
+o Profit entrega mesmo sem a opção estar na lista) e grava em dados_rt/opcoes/: um CSV
+por pregão e agora.json com a cotação mais recente de cada uma.
+
+O servidor RTD do Profit atende UM cliente por vez: outro programa que se conectar
+(outro coletor, um teste) toma a conexão, e este para de receber sem aviso. Por isso, no
+pregão, se nenhuma cotação chegar em 3 minutos o coletor reconecta sozinho.
+
 Uso:  python coletor_rtd.py              (roda para sempre)
       python coletor_rtd.py --teste 8    (conecta, grava, mostra o formato do RefreshData, sai em 8 s)
 """
@@ -21,7 +30,9 @@ from __future__ import annotations
 
 import csv
 import ctypes
+import json
 import pathlib
+import re
 import subprocess
 import sys
 import time
@@ -39,6 +50,12 @@ CAMPOS = ["ULT", "QTT", "VOL", "NEG", "HOR"]
 COLUNAS = ["ts", "hora", "ativo", "ult", "qtt", "vol", "neg", "hor"]
 TYPELIB = ("{EFCFBDCA-78A5-450B-8228-346C4F44D5B8}", 1, 0)   # RTDTrading, dentro do profitchart.exe
 BRT = timezone(timedelta(hours=-3), "BRT")
+PASTA_OPC = PASTA / "opcoes"
+ASSINAR = PASTA_OPC / "assinar.json"         # {"PETRJ500": "2026-09-15", ...} — escrito pelo painel/vigia
+AGORA = PASTA_OPC / "agora.json"             # última cotação de cada opção assinada
+CAMPOS_OPC = ["ULT", "OCP", "OVD", "QTT", "NEG", "HOR", "DAT"]   # OCP/OVD = melhor compra/venda
+COLUNAS_OPC = ["ts", "hora", "opcao", "ult", "compra", "venda", "qtt", "neg", "hor"]
+SILENCIO_MAX = 180                           # s sem cotação nova no pregão → reconecta
 
 
 def log(msg: str) -> None:
@@ -70,6 +87,21 @@ def profit_aberto() -> bool:
     return "profitchart.exe" in saida.lower()
 
 
+def em_pregao() -> bool:
+    agora = datetime.now(BRT)
+    return agora.weekday() < 5 and "10:05" <= f"{agora:%H:%M}" <= "18:20"
+
+
+def opcoes_pedidas() -> list[str]:
+    """Opções que o painel ou o vigia pediram hoje."""
+    try:
+        pedidos = json.loads(ASSINAR.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    hoje = f"{datetime.now(BRT):%Y-%m-%d}"
+    return sorted(t for t, dia in pedidos.items() if dia == hoje and re.fullmatch(r"[A-Z0-9]{5,12}", str(t)))[:40]
+
+
 def _numero(v):
     if v is None:
         return None
@@ -88,6 +120,8 @@ class Gravador:
     def __init__(self):
         PASTA.mkdir(exist_ok=True)
         self.dia, self.arq, self.escritor = None, None, None
+        self.opcoes: dict[str, dict] = {}
+        self._sujo, self._salvo = False, 0.0
 
     def _abre(self, agora: datetime) -> None:
         if self.dia == agora.date():
@@ -117,6 +151,38 @@ class Gravador:
             n += 1
         self.arq.flush()
         return n
+
+    def grava_opcoes(self, estado: dict, opcoes) -> None:
+        """Uma linha por mudança em dados_rt/opcoes/AAAA-MM-DD.csv; a última de cada opção
+        vai para agora.json (em salva_agora, no máximo uma vez por segundo)."""
+        agora = datetime.now(BRT)
+        PASTA_OPC.mkdir(parents=True, exist_ok=True)
+        caminho = PASTA_OPC / f"{agora:%Y-%m-%d}.csv"
+        novo = not caminho.exists()
+        with open(caminho, "a", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            if novo:
+                w.writerow(COLUNAS_OPC)
+            for t in sorted(opcoes):
+                e = estado[t]
+                linha = {"ult": _numero(e.get("ULT")), "compra": _numero(e.get("OCP")),
+                         "venda": _numero(e.get("OVD")), "qtt": _numero(e.get("QTT")),
+                         "neg": _numero(e.get("NEG")), "hor": e.get("HOR"), "dat": e.get("DAT")}
+                w.writerow([f"{agora.timestamp():.3f}", f"{agora:%H:%M:%S}", t, linha["ult"], linha["compra"],
+                            linha["venda"], linha["qtt"], linha["neg"], linha["hor"]])
+                self.opcoes[t] = {**linha, "ts": round(agora.timestamp(), 3)}
+        self._sujo = True
+
+    def salva_agora(self) -> None:
+        if not self._sujo or time.time() - self._salvo < 1:
+            return
+        tmp = AGORA.with_suffix(".tmp")
+        try:
+            tmp.write_text(json.dumps(self.opcoes, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(AGORA)
+            self._sujo, self._salvo = False, time.time()
+        except OSError:
+            pass            # o painel pode estar lendo; tenta de novo no próximo giro
 
 
 def _pares(resposta):
@@ -174,27 +240,45 @@ def coleta(gravador: Gravador, duracao: float | None = None) -> None:
     if srv.ServerStart(aviso) != 1:
         raise RuntimeError("o Profit recusou a conexão RTD — confira se o RTD está ativado")
     topicos, estado = {}, {a: {} for a in ATIVOS}
+    opcoes: set[str] = set()
     fim = time.time() + duracao if duracao else None
+    proximo = [0]
+
+    def assina(nome: str, campos) -> None:
+        estado.setdefault(nome, {})
+        for campo in campos:
+            proximo[0] += 1
+            topicos[proximo[0]] = (nome, campo)
+            r = srv.ConnectData(proximo[0], [f"{nome}_B_0", campo], True)
+            estado[nome][campo] = r[-1] if isinstance(r, (list, tuple)) else r
+
+    def assina_opcoes() -> None:
+        novas = [t for t in opcoes_pedidas() if t not in estado]
+        for t in novas:
+            assina(t, CAMPOS_OPC)
+            opcoes.add(t)
+        if novas:
+            gravador.grava_opcoes(estado, novas)
+            gravador.salva_agora()
+            log("opções assinadas: " + ", ".join(f"{t} {estado[t].get('ULT')}" for t in novas))
+
     try:
-        tid = 0
         for a in ATIVOS:
-            for campo in CAMPOS:
-                tid += 1
-                topicos[tid] = (a, campo)
-                r = srv.ConnectData(tid, [f"{a}_B_0", campo], True)
-                estado[a][campo] = r[-1] if isinstance(r, (list, tuple)) else r
+            assina(a, CAMPOS)
         n = gravador.grava(estado, ATIVOS)
         log(f"conectado; {n} ativos gravados: " + ", ".join(f"{a} {estado[a].get('ULT')}" for a in ATIVOS))
         if duracao:
             log(f"RefreshData direto (formato): {repr(srv.RefreshData(0))[:400]}")
+        assina_opcoes()
         cru_logado = False
-        checagem = time.time()
+        checagem = pedidos = ultimo_aviso = time.time()
         while fim is None or time.time() < fim:
             comtypes.client.PumpEvents(0.5)
             if aviso.chegou < 0:
                 raise ConnectionError("o Profit encerrou a conexão RTD")
             if aviso.chegou:
                 aviso.chegou = 0
+                ultimo_aviso = time.time()
                 resposta = srv.RefreshData(0)
                 pares = _pares(resposta)
                 if not cru_logado:
@@ -206,12 +290,21 @@ def coleta(gravador: Gravador, duracao: float | None = None) -> None:
                     if chave and estado[chave[0]].get(chave[1]) != v:
                         estado[chave[0]][chave[1]] = v
                         mudou.add(chave[0])
-                if mudou:
-                    gravador.grava(estado, mudou)
+                if mudou - opcoes:
+                    gravador.grava(estado, mudou - opcoes)
+                if mudou & opcoes:
+                    gravador.grava_opcoes(estado, mudou & opcoes)
+            gravador.salva_agora()
+            if time.time() - pedidos > 10:
+                pedidos = time.time()
+                assina_opcoes()
             if time.time() - checagem > 30:
                 checagem = time.time()
                 if not profit_aberto():
                     raise ConnectionError("o Profit foi fechado")
+                if em_pregao() and time.time() - ultimo_aviso > SILENCIO_MAX:
+                    raise ConnectionError(f"nenhuma cotação nova há {SILENCIO_MAX // 60} min (outro programa "
+                                          "pode ter tomado a conexão RTD); reconectando")
     finally:
         for t in topicos:
             try:

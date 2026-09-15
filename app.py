@@ -2025,6 +2025,17 @@ section[data-testid="stSidebar"] .sb.first{border-top:none;padding-top:0;margin-
   text-overflow:ellipsis;font-variant-numeric:tabular-nums;}
 .opc-g em{display:block;font:400 11.5px/1.3 var(--sans);font-style:normal;color:var(--t3);margin-top:3px;}
 .opc-g em.ok{color:var(--up);}
+.dx .opx-vivo{color:var(--up);font-weight:600;}
+.res-g{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));padding:6px 18px 4px;}
+.res-g>div{padding:12px 12px 12px 0;min-width:0;}
+.res-g span{display:block;font:500 10.5px/1.2 var(--sans);letter-spacing:.07em;text-transform:uppercase;color:var(--t3);}
+.res-g b{display:block;font:600 16px/1.2 var(--sans);margin-top:7px;white-space:nowrap;font-variant-numeric:tabular-nums;}
+.res-g b.up{color:var(--up);} .res-g b.down{color:var(--down);}
+.res-g em{display:block;font:400 11.5px/1.3 var(--sans);font-style:normal;color:var(--t3);margin-top:3px;}
+@media (max-width:760px){.res-g{grid-template-columns:repeat(2,minmax(0,1fr));}}
+.dx .hm td.c.mes-at{outline:1px dashed var(--t3);outline-offset:-3px;}
+.dx .hm td.c.ano{font-weight:700;}
+.dx .rk td.up{color:var(--up);} .dx .rk td.down{color:var(--down);}
 .dx .opc-vazio{margin:14px 0 12px;font:400 13px/1.55 var(--sans);color:var(--t2);}
 .opc.pendente .at-tk{color:var(--t2);}
 .opc-t{display:block;font:600 15px/1.2 var(--sans);color:var(--t1);}
@@ -3172,6 +3183,67 @@ def _barras_recentes(ativo: str) -> pd.DataFrame:
 
 
 PASTA_RT = Path(__file__).resolve().parent / "dados_rt"   # onde o coletor_rtd.py grava
+PASTA_OPC = PASTA_RT / "opcoes"            # opções assinadas no RTD (coletor_rtd.py)
+ARQ_ASSINAR, ARQ_AGORA = PASTA_OPC / "assinar.json", PASTA_OPC / "agora.json"
+URL_B3_INSTRUMENTO = "https://cotacao.b3.com.br/mds/api/v1/InstrumentQuotation/{}"
+
+
+def assinar_opcoes(tickers) -> None:
+    """Pede ao coletor RTD a cotação ao vivo destas opções (vale para o pregão de hoje)."""
+    hoje = f"{datetime.now(BRT):%Y-%m-%d}"
+    try:
+        pedidos = json.loads(ARQ_ASSINAR.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        pedidos = {}
+    pedidos = {t: d for t, d in pedidos.items() if d == hoje}
+    novos = {str(t) for t in tickers if t} - set(pedidos)
+    if not novos:
+        return
+    pedidos.update({t: hoje for t in novos})
+    try:
+        PASTA_OPC.mkdir(parents=True, exist_ok=True)
+        tmp = ARQ_ASSINAR.with_suffix(".tmp")
+        tmp.write_text(json.dumps(pedidos), encoding="utf-8")
+        tmp.replace(ARQ_ASSINAR)
+    except OSError:
+        pass
+
+
+def cotacao_ao_vivo(ticker: str) -> dict | None:
+    """Cotação da opção gravada pelo coletor RTD (Profit), se o último negócio for de hoje."""
+    try:
+        d = json.loads(ARQ_AGORA.read_text(encoding="utf-8")).get(ticker)
+    except (OSError, ValueError):
+        return None
+    if not d or not d.get("ult") or d["ult"] <= 0 or d.get("dat") != f"{datetime.now(BRT):%d/%m/%Y}":
+        return None
+    return {"fonte": "profit", "ult": d["ult"], "compra": d.get("compra"), "venda": d.get("venda"),
+            "hora": d.get("hor")}
+
+
+@cache_dados(ttl=60, show_spinner=False)
+def _cotacao_b3(simbolo: str) -> dict:
+    """Cotação do site da B3 (~15 min de atraso), para ação ou opção."""
+    r = requests.get(URL_B3_INSTRUMENTO.format(simbolo), headers={"User-Agent": HEADERS["User-Agent"]}, timeout=10)
+    r.raise_for_status()
+    d = r.json()
+    q = d["Trad"][0]["scty"]["SctyQtn"]
+    return {"ult": float(q["curPrc"]), "hora": str(d.get("Msg", {}).get("dtTm", ""))[11:16]}
+
+
+def cotacao_opcao(ativo: str, ticker: str) -> dict | None:
+    """A cotação mais nova da opção: ao vivo do Profit; sem ela, a da B3 (com a da ação no
+    mesmo instante, para a volatilidade implícita não misturar horários)."""
+    viva = cotacao_ao_vivo(ticker)
+    if viva:
+        return viva
+    if NO_NAVEGADOR or requests is None:
+        return None
+    try:
+        o, a = _cotacao_b3(ticker), _cotacao_b3(ativo)
+    except Exception:
+        return None
+    return {"fonte": "b3", "ult": o["ult"], "compra": None, "venda": None, "hora": o["hora"], "spot": a["ult"]}
 
 
 def barras_estrategia(ativo: str) -> pd.DataFrame:
@@ -3322,52 +3394,104 @@ def _opcoes_das_posicoes(resultados: dict) -> dict:
         return dict(pool.map(com_contexto, abertas.items()))
 
 
+FONTES_OPCAO = {"profit": "Profit ao vivo", "b3": "B3, ~15 min de atraso", "site": "opcoes.net.br"}
+
+
+def precos_opcao(ativo: str, est, op, preco: float, info: dict) -> dict:
+    """Preço da opção sugerida agora e estimado nos níveis da operação (parcial, alvo, stop).
+
+    A volatilidade implícita sai da cotação mais nova que houver — ao vivo do Profit (RTD,
+    meio do book), da B3 (~15 min de atraso) ou do opcoes.net.br (último negócio, às vezes do
+    pregão anterior) — e cada nível é o Black-Scholes com essa volatilidade, a ação no nível e
+    o prazo de hoje. Usado pelo cartão e pelo vigia.py (aviso no Windows e no Telegram)."""
+    o, tipo, du, taxa = info["opcao"], info["tipo"], info["du"], info["taxa"]
+    k, ticker, t = float(o["strike"]), str(o["ticker"]), max(du, 0) / 252.0
+    cot = cotacao_opcao(ativo, ticker)
+    iv, fonte, mercado = None, "site", None
+    if cot:
+        c, v = cot.get("compra"), cot.get("venda")
+        mercado = (c + v) / 2 if c and v and 0 < c <= v else cot.get("ult")
+        sigma = volatilidade_implicita(mercado, cot.get("spot") or preco, k, t, taxa, tipo) if mercado else None
+        if sigma:
+            iv, fonte = sigma * 100.0, cot["fonte"]
+    if iv is None:
+        vi = o.get("vol_impl")
+        iv = float(vi) if vi is not None and not pd.isna(vi) and vi > 0 else None
+
+    def valor(s_, dias=du):
+        if iv is None or s_ is None or pd.isna(s_):
+            return None
+        return _black_scholes(float(s_), k, max(dias, 0) / 252.0, iv / 100.0, taxa, tipo)[0]
+
+    if fonte == "profit":
+        agora = mercado
+        desc = (f"{_num(cot['compra'], 2)} × {_num(cot['venda'], 2)}"
+                if cot.get("compra") and cot.get("venda") else f"último · ação {_num(preco, 2)}")
+    else:
+        agora, desc = valor(preco), f"ação {_num(preco, 2)}"
+    niveis = [("Agora", agora, desc)]
+    if not pd.isna(op.alvo1) and getattr(est, "parcial_no_profit", True) and not op.parcial_feita:
+        niveis.append(("Na parcial", valor(op.alvo1), f"ação {_num(op.alvo1, 2)}"))
+    niveis.append(("No alvo", valor(op.alvo2), f"ação {_num(op.alvo2, 2)}"))
+    niveis.append(("No zero a zero" if op.stop_movido else "No stop", valor(op.stop), f"ação {_num(op.stop, 2)}"))
+    tipico = DIAS_TIPICOS.get(ativo, 2)
+    hoje_v, amanha, depois = valor(preco), valor(preco, du - 1), valor(preco, du - tipico)
+    theta = (hoje_v - amanha, hoje_v - depois, tipico) if None not in (hoje_v, amanha, depois) else None
+    if fonte == "profit":
+        nota = (f"Cotação ao vivo do Profit ({cot.get('hora') or '—'}): último {_moeda(cot['ult'])}"
+                + (f", compra {_moeda(cot['compra'])}, venda {_moeda(cot['venda'])}"
+                   if cot.get("compra") and cot.get("venda") else "")
+                + ". Parcial, alvo e stop estimados por Black-Scholes com a volatilidade implícita desse preço.")
+    elif fonte == "b3":
+        nota = (f"Ainda sem cotação ao vivo da opção (com o Profit aberto, o coletor passa a assiná-la em "
+                f"até 10 s). Usando a B3, com ~15 min de atraso: último {_moeda(cot['ult'])} com a ação a "
+                f"{_moeda(cot['spot'])}. Valores estimados por Black-Scholes.")
+    else:
+        spot_site = info.get("spot_site")
+        quando_site = f" (com a ação a ~{_moeda(spot_site)}, dado atrasado)" if spot_site else ""
+        nota = (f"Último negócio no site: {_moeda(o.get('ultimo'))}{quando_site}. Preços estimados por "
+                f"Black-Scholes com a volatilidade implícita do site.")
+    nota += " Confira o book antes de mandar a ordem."
+    partes = [f"agora {_moeda(agora)} ({FONTES_OPCAO[fonte]})"]
+    partes += [f"{n.lower()} ~{_moeda(v)}" for n, v, _ in niveis[1:] if v is not None]
+    resumo = (f"Comprar {tipo} {ticker} · strike {_moeda(k)} · vence {info['venc']:%d/%m} ({du} DU)\n"
+              + " · ".join(partes))
+    return {"ticker": ticker, "tipo": tipo, "strike": k, "iv": iv, "fonte": fonte, "cot": cot,
+            "niveis": niveis, "theta": theta, "nota": nota, "resumo": resumo}
+
+
 def _bloco_opcao(ativo: str, est, op, preco: float, info: dict | None) -> str:
-    """Opção a comprar para a posição e o preço estimado dela nos níveis da estratégia."""
+    """Opção a comprar para a posição, com o preço dela agora e o estimado nos níveis."""
     if not info:
         return ""
     if info.get("erro"):
         motivo = str(info["erro"]).strip().rstrip(".")
         return (f'<div class="opx"><p class="opx-n">Opção sugerida indisponível agora ({_esc(motivo)}). '
                 f'Confira na aba Opções; o painel tenta de novo na próxima atualização.</p></div>')
-    o, tipo, du, taxa = info["opcao"], info["tipo"], info["du"], info["taxa"]
-    k, iv, ultimo = float(o["strike"]), o.get("vol_impl"), o.get("ultimo")
-    tem_iv = iv is not None and not pd.isna(iv) and iv > 0
-
-    def valor(s, dias=du):
-        if not tem_iv or s is None or pd.isna(s):
-            return None
-        return _black_scholes(float(s), k, max(dias, 0) / 252.0, float(iv) / 100.0, taxa, tipo)[0]
-
-    niveis = [("Agora", valor(preco), f"ação {_num(preco, 2)}")]
-    if not pd.isna(op.alvo1) and getattr(est, "parcial_no_profit", True) and not op.parcial_feita:
-        niveis.append(("Na parcial", valor(op.alvo1), f"ação {_num(op.alvo1, 2)}"))
-    niveis.append(("No alvo", valor(op.alvo2), f"ação {_num(op.alvo2, 2)}"))
-    niveis.append(("No zero a zero" if op.stop_movido else "No stop", valor(op.stop), f"ação {_num(op.stop, 2)}"))
+    o, tipo, du = info["opcao"], info["tipo"], info["du"]
+    p = precos_opcao(ativo, est, op, preco, info)
     grade = "".join(f'<div><span>{r}</span><b>{_moeda(v) if v is not None else "—"}</b><em>{_esc(d)}</em></div>'
-                    for r, v, d in niveis)
+                    for r, v, d in p["niveis"])
     notas = []
-    tipico = DIAS_TIPICOS.get(ativo, 2)
-    hoje_v, amanha, depois = valor(preco), valor(preco, du - 1), valor(preco, du - tipico)
-    if None not in (hoje_v, amanha, depois):
-        notas.append(f"Com a ação parada, perde ~{_moeda(hoje_v - amanha)} por dia; em {tipico} "
+    if p["theta"]:
+        dia, periodo, tipico = p["theta"]
+        notas.append(f"Com a ação parada, perde ~{_moeda(dia)} por dia; em {tipico} "
                      f"{'dia útil' if tipico == 1 else 'dias úteis'} (tempo típico das operações vencedoras), "
-                     f"~{_moeda(hoje_v - depois)}.")
+                     f"~{_moeda(periodo)}.")
     if info.get("pulado"):
         notas.append(f"O vencimento curto ({info['pulado']:%d/%m}, {info['du_pulado']} DU) ficou de fora: "
-                     f"a {ativo} costuma precisar de {tipico} DU e pede pelo menos {info['minimo']} DU até o vencimento.")
+                     f"a {ativo} costuma precisar de {DIAS_TIPICOS.get(ativo, 2)} DU e pede pelo menos "
+                     f"{info['minimo']} DU até o vencimento.")
     if info.get("velha"):
         notas.append(f"O site não respondeu agora; grade das {info['velha'][0]:%H:%M}.")
-    spot_site = info.get("spot_site")
-    quando_site = f" (com a ação a ~{_moeda(spot_site)}, dado atrasado)" if spot_site else ""
-    notas.append(f"Último negócio no site: {_moeda(ultimo)}{quando_site}. Preços estimados por Black-Scholes com a "
-                 f"volatilidade implícita de hoje — confira o book antes de mandar a ordem.")
+    notas.append(p["nota"])
     lado_css = "call" if tipo == "CALL" else "put"
+    vivo = ' · <b class="opx-vivo">ao vivo</b>' if p["fonte"] == "profit" else ""
     return (f'<div class="opx {lado_css}"><div class="opx-h"><span class="side"><i></i>Comprar {tipo.lower()}</span>'
             f'<b class="opx-tk">{_esc(o["ticker"])}</b></div>'
-            f'<div class="opx-d">strike {_moeda(k)} · vence {info["venc"]:%d/%m} ({du} DU) · '
-            f'Δ {_num(o["delta"], 2, sinal=True)} · vol. impl. {_num(iv, 0, sufixo="%") if tem_iv else "—"}</div>'
-            f'<div class="opx-g" style="--n:{len(niveis)}">{grade}</div>'
+            f'<div class="opx-d">strike {_moeda(p["strike"])} · vence {info["venc"]:%d/%m} ({du} DU) · '
+            f'Δ {_num(o["delta"], 2, sinal=True)} · vol. impl. {_num(p["iv"], 0, sufixo="%") if p["iv"] else "—"}{vivo}</div>'
+            f'<div class="opx-g" style="--n:{len(p["niveis"])}">{grade}</div>'
             + "".join(f'<p class="opx-n">{n}</p>' for n in notas) + "</div>")
 
 
@@ -3555,6 +3679,189 @@ def _grafico_operacao(res, formando):
     return fig
 
 
+def _som_de_aviso(titulo: str, chave: str) -> None:
+    """Três bipes e o título da aba piscando. Roda na própria página (não num iframe): o
+    navegador libera o som depois do primeiro clique na página, e a aba Operações só abre
+    com um clique."""
+    st.html(f"""<script>/* aviso {_esc(chave)} */
+(function () {{
+  try {{
+    var C = window.__painelSom || (window.__painelSom = new (window.AudioContext || window.webkitAudioContext)());
+    if (C.state === "suspended") C.resume();
+    [[880, 0, .16], [1175, .2, .16], [1568, .4, .32]].forEach(function (b) {{
+      var o = C.createOscillator(), g = C.createGain(), t = C.currentTime + b[1];
+      o.type = "sine"; o.frequency.value = b[0];
+      g.gain.setValueAtTime(.0001, t); g.gain.exponentialRampToValueAtTime(.3, t + .02);
+      g.gain.exponentialRampToValueAtTime(.0001, t + b[2]);
+      o.connect(g); g.connect(C.destination); o.start(t); o.stop(t + b[2] + .05);
+    }});
+  }} catch (e) {{}}
+  var base = window.__painelTitulo || (window.__painelTitulo = document.title), n = 0;
+  clearInterval(window.__painelPisca);
+  window.__painelPisca = setInterval(function () {{
+    document.title = (n++ % 2 ? "" : {json.dumps("● " + titulo + " · ")}) + base;
+    if (n > 60 || (document.hasFocus() && n > 8)) {{ clearInterval(window.__painelPisca); document.title = base; }}
+  }}, 1000);
+}})();
+</script>""", unsafe_allow_javascript=True)
+
+
+_ICONE_AVISO = {"sinal": ":material/campaign:", "parcial": ":material/pie_chart:", "zero": ":material/shield:",
+                "stop_tocado": ":material/warning:", "saida": ":material/flag:"}
+
+
+def _avisos_navegador(resultados: dict) -> str:
+    """Balão e som quando surge um acontecimento novo (sinal, parcial, zero a zero, stop
+    tocado, saída) nos ativos avisados; devolve a faixa com os avisos do pregão. Na
+    primeira carga da página, só os dos últimos 15 min: o resto já tinha acontecido."""
+    import avisos
+    ativos = avisos.carregar()["ativos"]
+    agora = datetime.now(BRT)
+    evs = [e for a, r in resultados.items() if r and a in ativos
+           for e in avisos.eventos(a, ope.ESTRATEGIAS[a], r[0], agora)]
+    vistos = st.session_state.get("avisos_vistos")
+    if vistos is None:
+        vistos = st.session_state["avisos_vistos"] = set()
+        novos = [e for e in evs if e["hora"] is not None and agora - e["hora"] <= timedelta(minutes=15)]
+    else:
+        novos = [e for e in evs if e["chave"] not in vistos]
+    vistos.update(e["chave"] for e in evs)
+    for e in novos:
+        st.toast(f"**{e['titulo']}**  \n{e['texto']}", icon=_ICONE_AVISO.get(e["tipo"]),
+                 duration="infinite" if e["tipo"] in ("sinal", "saida") else "long")
+    if novos:
+        _som_de_aviso(novos[0]["titulo"], "|".join(e["chave"] for e in novos))
+    do_dia = sorted((e for e in evs if e["hora"] is not None and e["hora"].date() == agora.date()),
+                    key=lambda e: e["hora"])[-8:]
+    if not do_dia:
+        return ""
+    itens = " · ".join(f'<b>{e["hora"]:%H:%M}</b> {_esc(e["titulo"])}' for e in do_dia)
+    return f'<div class="stline">{_ic("relogio")}<span>Avisos de hoje: {itens}</span></div>'
+
+
+def _testar_avisos() -> None:
+    """Balão e som aqui, e a notificação de teste no Windows e no Telegram."""
+    import avisos
+    st.toast("**Teste do aviso**  \nÉ assim que um sinal aparece nesta página, com som.",
+             icon=":material/notifications_active:", duration="long")
+    _som_de_aviso("Teste do aviso", f"teste {time.time():.0f}")
+    if sys.platform != "win32":
+        return
+    cfg = avisos.carregar()
+    feito = avisos.enviar("Painel Day Trade · teste", "Se você está vendo isto, os avisos estão funcionando.", cfg)
+    win = feito.get("windows", "desligado no avisos.json")
+    tg = feito.get("telegram", "não configurado (rode python configurar_telegram.py)")
+    st.toast(f"Windows: {win}  \nTelegram: {tg}", icon=":material/info:", duration="long")
+
+
+ARQ_RESULTADOS = PASTA_RT / "resultados.json"      # escrito pelo resultados.py (o vigia refaz às 18:40)
+MESES_CURTOS = ("jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez")
+
+
+@cache_dados(ttl=3600, show_spinner=False)
+def _resultados_salvos(_mtime: float) -> dict:
+    return json.loads(ARQ_RESULTADOS.read_text(encoding="utf-8"))
+
+
+def _mil(v: float) -> str:
+    """+1.312 / −845: reais inteiros com sinal, para caber na célula."""
+    if v is None or pd.isna(v) or abs(v) < 0.5:
+        return "0"
+    return ("+" if v > 0 else "−") + f"{abs(v):,.0f}".replace(",", ".")
+
+
+def _cor_resultado(v: float, escala: float) -> str:
+    if abs(v) < 0.5:
+        return ""
+    base = "var(--up)" if v > 0 else "var(--down)"
+    return f' style="background:color-mix(in oklab,{base} {8 + 50 * min(1.0, abs(v) / escala):.0f}%,var(--c-mid))"'
+
+
+def _secao_resultados() -> None:
+    """Resultado mês a mês das estratégias recomendadas, como se tivessem sido operadas
+    (resultados.py: backtest com os candles do Profit desde 2022, refeito todo dia)."""
+    if not ARQ_RESULTADOS.exists():
+        return       # na nuvem não há candles do Profit; no PC aparece depois do primeiro cálculo
+    try:
+        dados = _resultados_salvos(ARQ_RESULTADOS.stat().st_mtime)
+    except Exception:
+        return
+    ativos = dados["ativos"]
+    _html(f'<div class="dx"><div class="sec"><div class="t">Resultado mês a mês</div>'
+          f'<div class="d">Como se as {len(ativos)} estratégias recomendadas tivessem sido operadas desde 2022 · '
+          f'backtest com os candles do Profit, {dados["lote"]} ações por operação, sem custos</div></div></div>')
+    escolha = st.segmented_control("Estratégia", ["Carteira"] + ativos, key="res_ativo", required=True,
+                                   default="Carteira", label_visibility="collapsed") or "Carteira"
+    meses = pd.DataFrame([{"mes": pd.Period(m["mes"], "M"), "ops": m["ops"], "total": m["total"],
+                           **m["por_ativo"], **{f"n_{a}": n for a, n in (m.get("ops_por_ativo") or {}).items()}}
+                          for m in dados["meses"]]).set_index("mes")
+    carteira = escolha == "Carteira"
+    serie = meses["total"] if carteira else meses[escolha]
+    n_ops = meses["ops"] if carteira else meses.get(f"n_{escolha}", pd.Series(0, index=meses.index))
+    n_ops = n_ops.fillna(0).astype(int)
+    atual = meses.index[-1]
+    fechados = serie.iloc[:-1] if len(serie) > 1 else serie
+    ult12 = float(serie.iloc[-12:].sum())
+    positivos = int((fechados > 0.5).sum())
+    pior = fechados.idxmin()
+
+    def tom(v):
+        return "up" if v > 0.5 else ("down" if v < -0.5 else "")
+
+    def nome_mes(per):
+        return f"{MESES_CURTOS[per.month - 1]}/{per.year}"
+
+    tiles = (f'<div class="res-g">'
+             f'<div><span>{nome_mes(atual)} até agora</span><b class="{tom(serie.iloc[-1])}">{_reais(serie.iloc[-1])}</b>'
+             f'<em>{n_ops.iloc[-1]} operações no mês</em></div>'
+             f'<div><span>Últimos 12 meses</span><b class="{tom(ult12)}">{_reais(ult12)}</b><em>com o mês atual</em></div>'
+             f'<div><span>Desde 2022</span><b class="{tom(serie.sum())}">{_reais(serie.sum())}</b>'
+             f'<em>{int(n_ops.sum())} operações</em></div>'
+             f'<div><span>Meses no positivo</span><b>{positivos} de {len(fechados)}</b>'
+             f'<em>{positivos / max(1, len(fechados)) * 100:.0f}% dos meses fechados</em></div>'
+             f'<div><span>Pior mês</span><b class="{tom(fechados.min())}">{_reais(fechados.min())}</b>'
+             f'<em>{nome_mes(pior)}</em></div></div>')
+    escala = float(np.nanpercentile(np.abs(fechados.to_numpy()), 90)) or 1.0
+    th = "".join(f"<th>{m}</th>" for m in MESES_CURTOS) + "<th>Ano</th>"
+    linhas = []
+    for ano in sorted({per.year for per in serie.index}, reverse=True):
+        cels = []
+        for mes in range(1, 13):
+            per = pd.Period(year=ano, month=mes, freq="M")
+            if per not in serie.index:
+                cels.append('<td class="c na"></td>')
+                continue
+            v = float(serie[per])
+            dica = f"{nome_mes(per)}: {_reais(v)} em {n_ops[per]} operações" + (" (mês em andamento)" if per == atual else "")
+            cels.append(f'<td class="c{" mes-at" if per == atual else ""}" title="{_escape(dica)}"'
+                        f'{_cor_resultado(v, escala)}>{_mil(v)}</td>')
+        do_ano = float(serie[[per for per in serie.index if per.year == ano]].sum())
+        cels.append(f'<td class="c ano"{_cor_resultado(do_ano, escala * 4)}>{_mil(do_ano)}</td>')
+        linhas.append(f'<tr><td class="ak">{ano}</td>{"".join(cels)}</tr>')
+    gerado = datetime.fromisoformat(dados["gerado"])
+    ate = datetime.fromisoformat(dados["ate"])
+    nota = (f"Resultado em <b>ações</b> ({dados['lote']} por operação), sem corretagem, emolumentos e slippage; "
+            f"com os candles do Profit, este motor fica de 2% a 19% abaixo do backtest do próprio Profit. Operando "
+            f"a opção (call na compra, put na venda), o ganho acompanha o delta (0,50 a 0,70) e a opção perde valor "
+            f"com o tempo — o resultado em opções é outro. Candles até {ate:%d/%m %H:%M}; o vigia refaz a conta "
+            f"todo dia depois das 18:40 (ou rode python resultados.py).")
+    titulo = "Carteira · " + ", ".join(ativos) if carteira else f"{escolha} · {ope.ESTRATEGIAS[escolha].nome}"
+    _html(f'<div class="dx"><div class="card"><div class="card-h"><div class="t">{_ic("grade")}{_esc(titulo)}</div>'
+          f'<div class="d">R$ por mês · atualizado {gerado:%d/%m %H:%M}</div></div>{tiles}'
+          f'<div class="hm-wrap"><table class="hm"><thead><tr><th></th>{th}</tr></thead>'
+          f'<tbody>{"".join(linhas)}</tbody></table></div>'
+          f'<div class="note">{_ic("info")}<span>{nota}</span></div></div></div>')
+    cab = "".join(f"<th>{a}</th>" for a in ativos) + "<th>Total</th><th>Operações</th>"
+    corpo = "".join(
+        f'<tr><td class="mut">{nome_mes(per)}</td>'
+        + "".join(f'<td class="{tom(linha[a])}">{_mil(linha[a])}</td>' for a in ativos)
+        + f'<td class="{tom(linha["total"])}"><b>{_mil(linha["total"])}</b></td><td class="mut">{int(linha["ops"])}</td></tr>'
+        for per, linha in meses.iloc[::-1].iterrows())
+    with st.expander("Ver mês a mês por estratégia", icon=":material/table_rows:"):
+        _html(f'<div class="dx"><div class="tbl-wrap"><table class="rk"><thead><tr><th>Mês</th>{cab}</tr></thead>'
+              f"<tbody>{corpo}</tbody></table></div></div>")
+
+
 def pagina_operacoes(cabecalho) -> None:
     with st.sidebar:
         _sb("Operações", primeiro=True)
@@ -3568,7 +3875,14 @@ def pagina_operacoes(cabecalho) -> None:
                    "gravando (ele sobe junto com o painel). Sem ele, os candles vêm do Yahoo, com cerca de 15 min "
                    "de atraso. Os dias anteriores vêm do Yahoo, ou do próprio Profit nos pregões que o coletor gravou.")
         st.caption("Em cada posição aberta aparece a opção a comprar (call na compra, put na venda), escolhida "
-                   "pelas regras da aba Opções, com o preço estimado dela no alvo e no stop.")
+                   "pelas regras da aba Opções. O preço dela vem ao vivo do Profit (o coletor assina a opção "
+                   "sozinho) ou da B3, com 15 min de atraso; alvo e stop são estimados com a volatilidade "
+                   "implícita desse preço.")
+        _sb("Avisos")
+        st.caption("Sinal, parcial, zero a zero, stop tocado e saída de VALE3, PETR4, BPAC11, ITUB4 e BOVA11: "
+                   "balão com som nesta página (com a atualização automática ligada) e, pelo vigia.py, "
+                   "notificação no Windows e no Telegram — mesmo com o navegador fechado.")
+        testar = st.button("Testar avisos", icon=":material/notifications:", key="testar_avisos", **_LARGURA)
     estado, hora = _estado_rtd()
     if estado == "vivo":
         fonte = f'<span class="pill"><span class="dot"></span><b>Profit</b> · tempo real</span>'
@@ -3581,7 +3895,10 @@ def pagina_operacoes(cabecalho) -> None:
                    fonte + f'<span class="pill">{_ic("relogio")}'
                    + ("Atualiza a cada <b>1 min</b>" if auto else "Atualização <b>manual</b>") + "</span>"),
           cabecalho)
+    if testar:
+        _testar_avisos()
     st.fragment(_painel_operacoes, run_every=ritmo if auto else None)()
+    _secao_resultados()
     _rodape("Sinais recalculados a partir do código das estratégias do Profit — confira no Profit antes de agir.")
 
 
@@ -3594,13 +3911,15 @@ def _painel_operacoes() -> None:
         except Exception as exc:
             erros[ativo] = str(exc)
     opcoes = _opcoes_das_posicoes(resultados)
+    assinar_opcoes([str(i["opcao"]["ticker"]) for i in opcoes.values() if i and "opcao" in i])
+    faixa = _avisos_navegador(resultados)
     cartoes = "".join(
         _cartao_operacao(a, ope.ESTRATEGIAS[a], *(resultados.get(a) or (None, None)), erros.get(a), opcoes.get(a))
         for a in ATIVOS if a in ope.ESTRATEGIAS)
     faltam = [a for a in ATIVOS if a not in ope.ESTRATEGIAS]
     if faltam:
         cartoes += _cartao_pendentes(faltam)
-    _html(f'<div class="dx"><div class="ops">{cartoes}</div></div>')
+    _html(f'<div class="dx">{faixa}<div class="ops">{cartoes}</div></div>')
     if not resultados:
         return
     disponiveis = [a for a in ATIVOS if a in resultados]
