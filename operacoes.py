@@ -73,6 +73,26 @@ def rsi(c: pd.Series, n: int = 14) -> pd.Series:
     return (100 - 100 / (1 + ganho / perda.replace(0, np.nan))).fillna(100)
 
 
+def rsi_simples(c: pd.Series, n: int = 14) -> pd.Series:
+    """RSI com médias aritméticas de ganhos e perdas (variante de Cutler)."""
+    d = c.diff()
+    ganho = media(d.clip(lower=0), n)
+    perda = media((-d).clip(lower=0), n)
+    return (100 - 100 / (1 + ganho / perda.replace(0, np.nan))).fillna(100)
+
+
+def adx_simples(h: pd.Series, l: pd.Series, c: pd.Series, n: int = 14) -> pd.Series:
+    """ADX com médias aritméticas: DI+ e DI- pela média de n do DM e do TR, ADX pela média de n do DX."""
+    sobe, desce = h.diff(), -l.diff()
+    dm_mais = pd.Series(np.where((sobe > desce) & (sobe > 0), sobe, 0.0), index=h.index)
+    dm_menos = pd.Series(np.where((desce > sobe) & (desce > 0), desce, 0.0), index=h.index)
+    tr = pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1)
+    atr = media(tr, n)
+    di_mais, di_menos = 100 * media(dm_mais, n) / atr, 100 * media(dm_menos, n) / atr
+    dx = 100 * (di_mais - di_menos).abs() / (di_mais + di_menos).replace(0, np.nan)
+    return media(dx.fillna(0), n)
+
+
 def vwap_diario(df: pd.DataFrame) -> pd.Series:
     """VWAP que recomeça a cada pregão, pelo preço típico de cada candle."""
     tipico = (df["high"] + df["low"] + df["close"]) / 3
@@ -93,6 +113,7 @@ class Ordem:
     qtd: float | None    # None = zera a posição inteira
     preco: float = NAN   # limite, ou disparo do stop
     rotulo: str = ""     # "entrada", "parcial", "alvo", "stop", "zeragem"
+    limite: float = NAN  # stop-limite: pior preço aceito depois do disparo
 
 
 @dataclass
@@ -137,22 +158,36 @@ class Operacao:
 
 
 def _preenche(ordem: Ordem, o: float, h: float, l: float) -> float | None:
-    """Preço de execução da ordem no candle (o, h, l), ou None se não executa."""
+    """Preço de execução da ordem no candle (o, h, l), ou None se não executa.
+
+    Como no backtest do Profit (conferido nas listas de operações):
+    - limite: se o candle abre além do preço, a favor, sai na abertura (na BPAC11, alvos
+      de 1,3% saíram com 2 a 3% depois de gap); senão, sai no próprio preço se o candle
+      chegar nele;
+    - stop (stop-limite de 0,05 na VALE3 e na PETR4): sai no disparo quando o candle chega
+      nele; num gap além do disparo, sai na abertura se ela estiver dentro do limite
+      (PETR4, 24/06/2026: stop 37,85, abertura 37,83, saída 37,83); se abriu além do
+      limite, só sai se o preço voltar — no próprio disparo, se o candle chegar nele
+      (VALE3, 07/08/2026: stop 73,82 num candle que abriu a 74,08, saída 73,82), ou no limite.
+    """
     if ordem.tipo == "mercado":
         return o
+    p = ordem.preco
     if ordem.tipo == "limite":
-        if ordem.lado < 0 and h >= ordem.preco:
-            return max(o, ordem.preco)
-        if ordem.lado > 0 and l <= ordem.preco:
-            return min(o, ordem.preco)
-        return None
+        if (o >= p) if ordem.lado < 0 else (o <= p):
+            return o
+        return p if l <= p <= h else None
     if ordem.tipo == "stop":
-        if ordem.lado < 0 and l <= ordem.preco:
-            return min(o, ordem.preco)
-        if ordem.lado > 0 and h >= ordem.preco:
-            return max(o, ordem.preco)
-        return None
+        lim, venda = ordem.limite, ordem.lado < 0
+        if o < p if venda else o > p:                      # abriu além do disparo
+            if math.isnan(lim) or (o >= lim if venda else o <= lim):
+                return o
+            if l <= p <= h:
+                return p
+            return lim if l <= lim <= h else None
+        return p if l <= p <= h else None
     raise ValueError(ordem.tipo)
+
 
 
 def _prioridade(ordem: Ordem, o: float) -> int:
@@ -173,6 +208,8 @@ class Estrategia:
     nome = ""
     minutos = 10
     lote = 100
+    lote_padrao = 100         # lote da B3: ordem que não é múltiplo dele não executa
+    parcial_no_profit = True  # False: a parcial do código é de 50 ações e não executa
     ultimo_candle = "16:50"   # abertura do último candle do pregão (horário de verão dos EUA)
     zera_no_fim_do_dia = False  # as estratégias dele carregam a posição de um dia para o outro
     breakeven = True
@@ -198,7 +235,10 @@ class Estrategia:
 
     def _gerenciar(self, b: pd.Series, op: Operacao, nivel_breakeven: float) -> list[Ordem]:
         """Seção 7 do NTSL: parcial de 50% na alvo 1 com stop no zero a zero, breakeven num
-        múltiplo do risco, e a cada candle o alvo final e o stop (stop-limite de 0,05)."""
+        múltiplo do risco, e a cada candle o alvo final e o stop (stop-limite de 0,05).
+
+        A parcial é de metade do lote (50 ações), fora do lote padrão de 100 da B3: no
+        Profit ela não executa, e o que sobra dela é o stop no zero a zero."""
         lado, entrada = op.lado, op.preco_sinal
         risco = (entrada - op.stop_inicial) * lado
         ordens = []
@@ -209,7 +249,7 @@ class Estrategia:
                 (b["close"] - (entrada + lado * risco * nivel_breakeven)) * lado >= 0:
             op.stop, op.stop_movido = entrada + 0.01 * lado, True
         ordens.append(Ordem("limite", -lado, None, op.alvo2, "alvo"))
-        ordens.append(Ordem("stop", -lado, None, op.stop, "stop"))
+        ordens.append(Ordem("stop", -lado, None, op.stop, "stop", limite=op.stop - 0.05 * lado))
         return ordens
 
 
@@ -220,11 +260,14 @@ class Vale3(Estrategia):
     volume acima da média de 20, ADX(14,14) > 20, rompimento da máxima dos dois
     candles anteriores com candle de alta, e stop (mínima de 3 candles − 0,03)
     a no máximo 1,60% do preço. Parcial de 50% em 1R com stop no zero a zero,
-    alvo final em 1,85R, breakeven em 1,5R.
+    alvo final em 2,5R (RiscoRetorno: o código traz 1,85, mas a lista de operações do
+    Profit só bate com 2,5), breakeven em 1,5R. No Profit a parcial não executa (50 ações
+    fica fora do lote padrão de 100); o fechamento além de 1R só leva o stop ao zero a zero.
     """
     ativo, nome, minutos, lote = "VALE3", "Execução VALE3", 10, 100
+    parcial_no_profit = False
 
-    def __init__(self, risco_retorno: float = 1.85, breakeven: bool = True, max_stop_pct: float = 1.60):
+    def __init__(self, risco_retorno: float = 2.50, breakeven: bool = True, max_stop_pct: float = 1.60):
         self.rr, self.breakeven, self.max_stop = risco_retorno, breakeven, max_stop_pct
 
     def indicadores(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -262,15 +305,18 @@ class Petr4(Estrategia):
     média de 9 subindo ou descendo, ADX(14, 0) > 20, candle com corpo maior que
     5% da amplitude média de 14, volume acima da média de 20 e stop (extremo de
     4 candles ± 0,03) a no máximo 1,60%. Parcial de 50% em 1,5R, alvo final em
-    2,9R, breakeven em 1,5R.
+    2,9R, breakeven em 1,5R. Mesma gestão da VALE3: no Profit a parcial não executa.
     """
     ativo, nome, minutos, lote = "PETR4", "Execução PETR4", 20, 100
+    parcial_no_profit = False
     ultimo_candle = "16:40"
 
     def __init__(self, rr_final: float = 2.90, fator_parcial: float = 1.50, filtro_amplitude: float = 0.05,
-                 breakeven: bool = True, adx_min: float = 20.0, max_stop_pct: float = 1.60):
+                 breakeven: bool = True, adx_min: float = 20.0, max_stop_pct: float = 1.60,
+                 adx_modo: str = "dx", rsi_modo: str = "wilder"):
         self.rr, self.fator_parcial, self.amplitude = rr_final, fator_parcial, filtro_amplitude
         self.breakeven, self.adx_min, self.max_stop = breakeven, adx_min, max_stop_pct
+        self.adx_modo, self.rsi_modo = adx_modo, rsi_modo
 
     def indicadores(self, df: pd.DataFrame) -> pd.DataFrame:
         c, h, l, o = df["close"], df["high"], df["low"], df["open"]
@@ -278,8 +324,11 @@ class Petr4(Estrategia):
         x["ema9"], x["ema21"], x["ema50"] = media_exp(c, 9), media_exp(c, 21), media_exp(c, 50)
         x["vwap"] = vwap_diario(df)
         x["vol_media"] = media(df["volume"], 20)
-        x["rsi"] = rsi(c, 14)
-        x["adx"] = adx(h, l, c, 14, 0)
+        x["rsi"] = rsi_simples(c, 14) if self.rsi_modo == "simples" else rsi(c, 14)
+        if self.adx_modo == "simples":
+            x["adx"] = adx_simples(h, l, c, 14)
+        else:
+            x["adx"] = adx(h, l, c, 14, 14 if self.adx_modo == "wilder" else 0)
         x["macd"] = media_exp(c, 12) - media_exp(c, 26)
         x["macd_sinal"] = media_exp(x["macd"], 9)
         alta = (x["ema9"] > x["ema21"]) & (x["ema21"] > x["ema50"]) & (c > x["vwap"])
@@ -383,12 +432,13 @@ class Bpac11(Pullback):
 
 
 class Bbas3(Pullback):
-    """Pullback BBAS3 (Profit), 10 min: alvo de 1,5%, força da tendência acima de 0,25% do preço,
+    """Pullback BBAS3 (Profit), 10 min: alvo de 1,5%, força da tendência acima de 0,35% do preço
+    (FiltroForcaMult: o código traz 0,0025, mas a lista do Profit só bate com ~0,0035),
     entrada até 14:00 e sem filtro de tamanho do stop. O código do Profit não pinta o candle do
     sinal; aqui ele é pintado mesmo assim, para o gráfico mostrar onde a operação começou."""
     ativo, nome, minutos, lote = "BBAS3", "Pullback BBAS3", 10, 100
 
-    def __init__(self, alvo_pct: float = 1.5, filtro_forca: float = 0.0025, hora_limite: int = 1400):
+    def __init__(self, alvo_pct: float = 1.5, filtro_forca: float = 0.0035, hora_limite: int = 1400):
         super().__init__(alvo_pct, hora_limite, filtro_forca=filtro_forca)
 
 
@@ -418,11 +468,12 @@ class Itub4(Estrategia):
 
     Gestão: parcial de 50 ações em 2R; quando a máxima de um candle toca a 2R, o
     stop vai para o zero a zero e o alvo final (4,4R) entra. O stop sai a mercado
-    no candle seguinte ao toque. Como no código original, a ordem da parcial é
-    reenviada no fechamento do candle em que ela foi executada — se o preço seguir
-    acima da 2R no candle seguinte, a outra metade também sai na parcial.
+    no candle seguinte ao toque. A parcial é de 50 ações, fora do lote padrão de 100:
+    no Profit ela nunca executa (nas 3 operações do backtest, as 100 ações saem no alvo
+    final), e o toque na 2R só leva o stop ao zero a zero e liga o alvo final.
     """
     ativo, nome, minutos, lote = "ITUB4", "Execução ITUB4", 15, 100
+    parcial_no_profit = False
     ultimo_candle = "16:45"
 
     def __init__(self, fator_parcial: float = 2.00, fator_alvo: float = 4.40, max_stop_pct: float = 1.40,
@@ -540,6 +591,8 @@ def simular(est: Estrategia, df: pd.DataFrame, zerar_no_fim_do_dia: bool | None 
                 continue
             if op is None or not op.aberta or abs(op.qtd) < 1e-9:
                 continue
+            if ordem.qtd is not None and ordem.qtd % est.lote_padrao:
+                continue      # fora do lote padrão (parcial de 50 num lote de 100): não executa
             preco = _preenche(ordem, o, h, l)
             if preco is None:
                 continue
@@ -635,7 +688,8 @@ def barras_rtd(ativo: str, pasta, dia) -> pd.DataFrame:
     idx = pd.to_datetime(df["ts"], unit="s", utc=True).dt.tz_convert(BRT)
     s = pd.DataFrame({"ult": df["ult"].to_numpy(), "qtt": df["qtt"].to_numpy()}, index=idx.to_numpy())
     s.index = pd.DatetimeIndex(s.index).tz_convert(BRT)
-    s = s[(s.index.strftime("%H:%M") >= "10:00") & (s.index.strftime("%H:%M") < "17:10")]
+    # pregão, leilão de fechamento e after-market (o Profit mostra negócios até ~18:25)
+    s = s[(s.index.strftime("%H:%M") >= "10:00") & (s.index.strftime("%H:%M") <= "18:30")]
     if s.empty:
         return pd.DataFrame()
     vol = s["qtt"].diff().clip(lower=0).fillna(0)
@@ -648,8 +702,9 @@ def barras_rtd(ativo: str, pasta, dia) -> pd.DataFrame:
 
 
 def juntar_barras(yahoo: pd.DataFrame, rtd: pd.DataFrame) -> pd.DataFrame:
-    """Histórico do Yahoo com o pregão de hoje vindo do RTD a partir da primeira barra que o
-    coletor pegou inteira; antes disso (coletor ligado com o pregão andando) fica o Yahoo."""
+    """Troca as barras do Yahoo pelas de um pregão gravado pelo coletor RTD, no trecho que
+    ele gravou: da primeira barra que pegou inteira até a última. Fora dele — antes de o
+    coletor ligar, ou depois de ele parar — fica o Yahoo."""
     if rtd is None or rtd.empty:
         return yahoo
     inicio = rtd.attrs.get("inicio", rtd.index[0])
@@ -657,7 +712,109 @@ def juntar_barras(yahoo: pd.DataFrame, rtd: pd.DataFrame) -> pd.DataFrame:
     rtd = rtd[rtd.index >= primeira_inteira]
     if rtd.empty:
         return yahoo
-    return pd.concat([yahoo[yahoo.index < primeira_inteira], rtd]).sort_index()
+    fim = rtd.index[-1] + pd.Timedelta(minutes=5)
+    fora = (yahoo.index < primeira_inteira) | (yahoo.index >= fim)
+    return pd.concat([yahoo[fora], rtd]).sort_index()
+
+
+def dias_rtd(pasta) -> list:
+    """Datas dos pregões que o coletor RTD gravou (arquivos AAAA-MM-DD.csv), em ordem."""
+    import pathlib
+    dias = []
+    for arq in pathlib.Path(pasta).glob("????-??-??.csv"):
+        try:
+            dias.append(datetime.strptime(arq.stem, "%Y-%m-%d").date())
+        except ValueError:
+            pass
+    return sorted(dias)
+
+
+def barras_diarias(ativo: str, faixa: str = "6mo") -> pd.DataFrame:
+    """Fechamento e volume diários do Yahoo, pela data. O fechamento é o do leilão."""
+    import requests
+    resp = requests.get(YAHOO_CHART.format(simbolo=f"{ativo}.SA"), params={"range": faixa, "interval": "1d"},
+                        headers=_UA, timeout=20)
+    resp.raise_for_status()
+    r = resp.json()["chart"]["result"][0]
+    q = r["indicators"]["quote"][0]
+    datas = pd.to_datetime(r["timestamp"], unit="s", utc=True).tz_convert(BRT).date
+    return pd.DataFrame({"close": q["close"], "volume": q["volume"]}, index=datas).dropna(subset=["close"])
+
+
+def com_leilao_fechamento(barras: pd.DataFrame, diario: pd.DataFrame, hoje=None) -> pd.DataFrame:
+    """Põe de volta o leilão de fechamento, que as barras de 5 min do Yahoo perdem nos
+    pregões passados: uma barra das 16:55 fechando no preço oficial do dia, com o volume
+    que falta para o volume do dia (10 a 15% na VALE3). `candles_de_5min` a junta ao
+    último candle do pregão, como no Profit, onde ela entra nas médias, na VWAP e na
+    média de volume. O pregão de hoje fica de fora — ainda pode estar em andamento, e o
+    RTD traz o leilão de verdade."""
+    if barras.empty or diario.empty:
+        return barras
+    hoje = hoje or datetime.now(BRT).date()
+    b = barras.copy()
+    novas = []
+    for dia, grupo in barras.groupby(barras.index.date):
+        if dia >= hoje or dia not in diario.index or grupo.index[-1].strftime("%H:%M") >= "17:00":
+            continue
+        fech = float(diario.at[dia, "close"])
+        falta = max(0.0, float(diario.at[dia, "volume"] or 0) - float(grupo["volume"].sum()))
+        t = pd.Timestamp(f"{dia} 16:55").tz_localize(BRT)
+        if t in b.index:
+            b.loc[t, ["high", "low", "close"]] = [max(b.at[t, "high"], fech), min(b.at[t, "low"], fech), fech]
+            b.loc[t, "volume"] += falta
+        else:
+            novas.append((t, fech, falta))
+    if not novas:
+        return b
+    precos = [p for _, p, _ in novas]
+    extra = pd.DataFrame({"open": precos, "high": precos, "low": precos, "close": precos,
+                          "volume": [v for *_, v in novas]}, index=pd.DatetimeIndex([t for t, *_ in novas]))
+    return pd.concat([b, extra]).sort_index()
+
+
+# Fatores medidos nas listas de operações do Profit (preço de entrada do Profit ÷
+# abertura crua do mesmo candle, antes da data ex; variação < 0,03% entre operações).
+# O provento do Yahoo não reproduz o ajuste do Profit — na VALE3, na PETR4 e na BPAC11
+# o Profit ajusta menos, na BBAS3 mais —, então, quando há fator medido, vale ele.
+FATORES_PROFIT: dict[tuple[str, str], float] = {
+    ("VALE3", "2026-08-12"): 0.97587,
+    ("PETR4", "2026-08-24"): 0.97250,
+    ("BPAC11", "2026-08-11"): 0.98774,
+    ("BBAS3", "2026-09-02"): 0.99440,
+}
+
+
+def proventos(ativo: str, faixa: str = "1y") -> list[tuple]:
+    """Proventos em dinheiro do Yahoo: (data ex, valor por ação), em ordem."""
+    import requests
+    resp = requests.get(YAHOO_CHART.format(simbolo=f"{ativo}.SA"),
+                        params={"range": faixa, "interval": "1d", "events": "div"}, headers=_UA, timeout=20)
+    resp.raise_for_status()
+    eventos = (resp.json()["chart"]["result"][0].get("events") or {}).get("dividends") or {}
+    return sorted((datetime.fromtimestamp(d["date"], BRT).date(), float(d["amount"])) for d in eventos.values())
+
+
+def ajustar_proventos(barras: pd.DataFrame, eventos: list[tuple], ativo: str = "") -> pd.DataFrame:
+    """Histórico ajustado como o gráfico do Profit: preços anteriores a cada data ex
+    multiplicados por 1 − provento ÷ último fechamento antes dela (volume intacto).
+
+    Sem isso, a lista de operações do Profit fica toda deslocada antes de uma data
+    ex (na VALE3, 2,4% abaixo do preço de verdade até 12/08/2026). O sinal quase não
+    muda — as médias andam juntas —, mas preço de entrada, stop e alvo mudam.
+    """
+    if barras.empty or not eventos:
+        return barras
+    b = barras.copy()
+    datas = pd.Index(b.index.date)
+    for ex, valor in eventos:
+        antes = datas < ex
+        if not antes.any() or antes.all():
+            continue
+        fator = FATORES_PROFIT.get((ativo, f"{ex:%Y-%m-%d}"))
+        if fator is None:
+            fator = 1 - valor / float(b.loc[antes, "close"].iloc[-1])
+        b.loc[antes, ["open", "high", "low", "close"]] *= fator
+    return b
 
 
 def situacao(est: Estrategia, barras_5m: pd.DataFrame,
@@ -670,7 +827,7 @@ def situacao(est: Estrategia, barras_5m: pd.DataFrame,
     if len(candles) < 60:
         raise ValueError(f"só {len(candles)} candles de {est.minutos} min; os indicadores precisam de mais")
     inicio = candles.index[-1]
-    em_pregao = inicio.date() == agora.date() and agora.strftime("%H:%M") < "17:10"
+    em_pregao = inicio.date() == agora.date() and agora.strftime("%H:%M") <= "18:30"
     if em_pregao:
         formando = candles.iloc[-1]
         return simular(est, candles.iloc[:-1], candle_em_formacao=formando), formando
@@ -678,12 +835,23 @@ def situacao(est: Estrategia, barras_5m: pd.DataFrame,
 
 
 def candles_de_5min(barras_5m: pd.DataFrame, minutos: int) -> pd.DataFrame:
-    """Agrupa barras de 5 min no tempo gráfico da estratégia, alinhado ao pregão (10:00, 10:10…)."""
-    if minutos == 5:
+    """Agrupa barras de 5 min no tempo gráfico da estratégia como o gráfico do Profit.
+
+    O pregão regular fica alinhado às 10:00 (10:00, 10:10…) e o leilão de fechamento
+    (negócios das 17:00 às 17:29) entra no último candle dele — no BOVA11 de 60 min,
+    sinal no candle das 16:00 entra às 17:30, então não existe candle das 17:00. O
+    after-market recomeça o alinhamento às 17:30 (17:30, 17:50… em 20 min; 17:30 em 60 min).
+    """
+    if barras_5m.empty:
         return barras_5m
-    regra = f"{minutos}min"
-    agrup = barras_5m.resample(regra, label="left", closed="left", origin="start_day")
+    hm = np.asarray(barras_5m.index.hour * 60 + barras_5m.index.minute)
+    efetivo = np.where((hm >= 17 * 60) & (hm < 17 * 60 + 30), 16 * 60 + 55, hm)
+    base = np.where(efetivo >= 17 * 60 + 30, 17 * 60 + 30, 0)
+    inicio = base + (efetivo - base) // minutos * minutos
+    chave = barras_5m.index.normalize() + pd.to_timedelta(inicio, unit="min")
+    agrup = barras_5m.groupby(chave)
     df = pd.DataFrame({"open": agrup["open"].first(), "high": agrup["high"].max(),
                        "low": agrup["low"].min(), "close": agrup["close"].last(),
                        "volume": agrup["volume"].sum()})
+    df.index.name = None
     return df.dropna(subset=["open", "close"])

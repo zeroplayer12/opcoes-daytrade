@@ -281,11 +281,10 @@ gráfico de candles do pregão com as linhas da operação. Abre direto em
 - **As estratégias são traduzidas** do código do Profit para `operacoes.py` (hoje: VALE3
   em 10 min, PETR4 em 20 min, BPAC11 em 15 min, BBAS3 em 10 min, BOVA11 em 60 min e ITUB4
   em 15 min; BPAC11, BBAS3 e BOVA11 são a mesma família de pullback, com parâmetros
-  diferentes). A ITUB4 só compra e faz no máximo uma operação por dia; fiel ao código, a
-  ordem da parcial é reenviada no candle em que foi executada e pode vender a outra metade
-  no preço da parcial no candle seguinte. Pontos que ainda
-  dependem da conferência: na PETR4, `ADX(14, 0)` foi lido como ADX sem suavização (o
-  próprio DX) e `RSI(14, 0)` como o IFR clássico de Wilder; na BPAC11 e na BBAS3, `Time`
+  diferentes). A ITUB4 só compra e faz no máximo uma operação por dia. Na PETR4,
+  `ADX(14, 0)` foi lido como ADX sem suavização (o próprio DX) e `RSI(14, 0)` como o IFR
+  clássico de Wilder — as leituras com médias aritméticas e com o ADX suavizado não batem
+  melhor com a lista do Profit; na BPAC11 e na BBAS3, `Time`
   como o horário de abertura do candle (entrada até o candle das 16:30 e das 14:00).
   Nessas duas o stop não é ordem stop — o toque no nível fecha a posição a mercado no
   candle seguinte — e a saída das 17:40 do código nunca dispara (compara `Time`, em HHMM,
@@ -295,12 +294,37 @@ gráfico de candles do pregão com as linhas da operação. Abre direto em
   candle. A posição **não é zerada às 17h**: segue de um pregão para o outro até o alvo
   ou o stop, como nas estratégias do Profit — por isso a simulação parte de 60 dias de
   histórico. Quando um candle toca stop e alvo, o motor assume o stop.
-- **Conferência obrigatória:** a tradução só vale depois de bater, operação por operação,
-  com a lista de operações do backtest do Profit no mesmo período.
+- **Conferência com o Profit (listas de operações de 22/06 a 14/09/2026):** 97 de 142
+  operações iguais ao backtest do Profit (mesma entrada, mesmo preço, mesmo resultado) —
+  BBAS3 15/16, BPAC11 32/43, VALE3 29/44, PETR4 13/24, BOVA11 6/12, ITUB4 2/3. Para isso o
+  motor reproduz o backtest do Profit em:
+  - **parcial de 50 ações não executa:** fica fora do lote padrão de 100 da B3, e nas listas
+    da VALE3, da PETR4 e da ITUB4 nenhuma operação tem parcial. O que sobra dela é o stop no
+    zero a zero (e, na ITUB4, o alvo final ligado). O cartão mostra o nível, marcado como
+    "não executa (50 ações)";
+  - **execução no preço da ordem:** limite sai na abertura se o candle abre além dela (alvos
+    de 1,3% da BPAC11 saíram com 2 a 3% depois de gap) e, senão, no próprio preço;
+    stop-limite sai no disparo quando o candle chega nele e, em gap, na abertura se ela
+    estiver dentro do limite;
+  - **histórico ajustado por proventos** com os fatores que o Profit usa, medidos nas listas
+    (`FATORES_PROFIT`) — o valor do provento no Yahoo não reproduz o ajuste dele;
+  - **leilão de fechamento dentro do último candle do pregão** e **after-market alinhado às
+    17:30** (no BOVA11 de 60 min, sinal no candle das 16:00 entra às 17:30); o Yahoo perde o
+    leilão nos pregões passados, e o painel o recria com o fechamento e o volume diários;
+  - **parâmetros configurados no Profit, diferentes do código enviado:** VALE3 com alvo
+    final em 2,5R (o código traz 1,85) e BBAS3 com filtro de força de ~0,0035 (o código
+    traz 0,0025).
+
+  O que ainda difere vem quase todo dos dados: o Yahoo não tem o after-market (o Profit roda
+  as estratégias nele, com entradas às 17:30 e saídas até 18:20) e às vezes perde candles, e
+  uma operação diferente desloca as seguintes. Os pregões gravados pelo coletor RTD vêm do
+  próprio Profit, com leilão e after-market, e substituem o Yahoo, então a simulação fica
+  mais fiel a cada dia gravado.
 - **Tempo real pelo Profit:** o `coletor_rtd.py` lê as cotações dos 6 ativos no servidor
   RTD do Profit (o mesmo do Excel: `=RTD("RTDTrading.RTDServer";; "VALE3_B_0"; "ULT")`,
   campos ULT, QTT, VOL, NEG e HOR) e grava cada mudança em `dados_rt/AAAA-MM-DD.csv`.
-  A aba monta as barras de 5 min do pregão a partir daí e atualiza a cada 5 s. Ele sobe
+  A aba monta as barras de 5 min de cada pregão gravado (com leilão e after-market, até
+  18:30) e atualiza a cada 5 s. Ele sobe
   junto com o painel (`iniciar-painel.cmd`), espera o Profit abrir, reconecta se o
   Profit fechar, roda uma instância só e registra tudo em `coletor.log`; o
   `parar-painel.cmd` encerra os dois.

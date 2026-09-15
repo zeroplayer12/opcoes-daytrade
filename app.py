@@ -3129,8 +3129,25 @@ def _painel_mercados() -> None:
 
 @cache_dados(ttl=3600, show_spinner=False)
 def _barras_historico(ativo: str) -> pd.DataFrame:
-    """60 dias de barras de 5 min (o máximo do Yahoo), renovados de hora em hora."""
-    return ope.barras_5min(ativo, "60d")
+    """60 dias de barras de 5 min (o máximo do Yahoo) com o candle do leilão de
+    fechamento recriado, renovadas de hora em hora. Sem ajuste por proventos: ele vem
+    no fim, depois de entrarem os pregões do RTD."""
+    barras = ope.barras_5min(ativo, "60d")
+    try:
+        return ope.com_leilao_fechamento(barras, ope.barras_diarias(ativo))
+    except Exception:
+        return barras
+
+
+@cache_dados(ttl=3600, show_spinner=False)
+def _proventos(ativo: str) -> list:
+    return ope.proventos(ativo)
+
+
+@cache_dados(ttl=3600, show_spinner=False)
+def _barras_rtd_passado(ativo: str, dia) -> pd.DataFrame:
+    """Pregão já encerrado gravado pelo coletor (o arquivo não muda mais)."""
+    return ope.barras_rtd(ativo, PASTA_RT, dia)
 
 
 @cache_dados(ttl=30, show_spinner=False)
@@ -3142,12 +3159,25 @@ PASTA_RT = Path(__file__).resolve().parent / "dados_rt"   # onde o coletor_rtd.p
 
 
 def barras_estrategia(ativo: str) -> pd.DataFrame:
-    """Histórico longo mais o pregão de agora. As estratégias carregam posição de um
-    dia para o outro, então a simulação precisa começar bem antes da operação aberta.
-    O pregão de hoje vem do RTD do Profit quando o coletor está gravando; senão, do Yahoo."""
+    """Histórico longo mais o pregão de agora, o mais parecido possível com o gráfico do
+    Profit. As estratégias carregam posição de um dia para o outro, então a simulação
+    precisa começar bem antes da operação aberta.
+
+    Todo pregão que o coletor RTD gravou (o de hoje inclusive) vem dele — com os leilões e o
+    after-market, como no Profit; o resto vem do Yahoo. O ajuste por proventos fica por
+    último, porque o RTD grava o preço negociado, sem ajuste."""
     barras = pd.concat([_barras_historico(ativo), _barras_recentes(ativo)])
     barras = barras[~barras.index.duplicated(keep="last")].sort_index()
-    return ope.juntar_barras(barras, ope.barras_rtd(ativo, PASTA_RT, datetime.now(BRT).date()))
+    hoje = datetime.now(BRT).date()
+    if len(barras):
+        for dia in ope.dias_rtd(PASTA_RT):
+            if barras.index[0].date() <= dia < hoje:
+                barras = ope.juntar_barras(barras, _barras_rtd_passado(ativo, dia))
+    barras = ope.juntar_barras(barras, ope.barras_rtd(ativo, PASTA_RT, hoje))
+    try:
+        return ope.ajustar_proventos(barras, _proventos(ativo), ativo)
+    except Exception:
+        return barras
 
 
 def _estado_rtd() -> tuple[str, str]:
@@ -3157,9 +3187,9 @@ def _estado_rtd() -> tuple[str, str]:
         return "fora", ""
     quando = datetime.fromtimestamp(arq.stat().st_mtime, BRT)
     agora = datetime.now(BRT)
-    if (agora - quando).total_seconds() < 180 and "10:00" <= agora.strftime("%H:%M") < "17:10":
+    if (agora - quando).total_seconds() < 180 and "10:00" <= agora.strftime("%H:%M") <= "18:30":
         return "vivo", f"{quando:%H:%M:%S}"
-    return ("encerrado" if agora.strftime("%H:%M") >= "17:10" else "fora"), f"{quando:%H:%M}"
+    return ("encerrado" if agora.strftime("%H:%M") > "18:30" else "fora"), f"{quando:%H:%M}"
 
 
 def _quando(t, dia) -> str:
@@ -3231,8 +3261,13 @@ def _cartao_operacao(ativo: str, est, res, formando, erro: str | None) -> str:
              f'<div class="ag {tom}" style="left:{pos(preco):.1f}%" title="preço atual {_moeda(preco)}"></div></div>')
     falta = abs(op.alvo2 - preco) / preco * 100
     if tem_parcial:
-        parcial_txt = (f'<em class="ok">executada {_quando(parcial.hora, dia)}</em>' if parcial
-                       else "<em>pendente</em>")
+        if parcial:
+            parcial_txt = f'<em class="ok">executada {_quando(parcial.hora, dia)}</em>'
+        elif not getattr(est, "parcial_no_profit", True):
+            parcial_txt = ('<em title="A parcial do código é de 50 ações, e o lote padrão da B3 é de 100: '
+                           'no Profit a ordem não executa">não executa (50 ações)</em>')
+        else:
+            parcial_txt = "<em>pendente</em>"
         meio = (f'<div><span>Parcial</span><b>{_moeda(op.alvo1)}</b>{parcial_txt}</div>'
                 f'<div><span>Alvo final</span><b>{_moeda(op.alvo2)}</b><em>faltam {_num(falta, 2)}%</em></div>')
     else:
@@ -3341,7 +3376,9 @@ def _grafico_operacao(res, formando):
         font=dict(family="Inter, system-ui, sans-serif", size=12, color="#A9B4C8"),
         xaxis=dict(rangeslider=dict(visible=False), showgrid=False,
                    tickformat="%d/%m %H:%M" if varios_dias else "%H:%M",
-                   rangebreaks=[dict(bounds=["sat", "mon"]), dict(bounds=[17.5, 10], pattern="hour")],
+                   rangebreaks=[dict(bounds=["sat", "mon"]),
+                                dict(bounds=[18.5 if (d.index.hour * 60 + d.index.minute >= 17 * 60 + 30).any()
+                                             else 17.5, 10], pattern="hour")],
                    linecolor="rgba(255,255,255,.12)", range=[d.index[0], fim + pd.Timedelta(minutes=30)]),
         yaxis=dict(side="right", gridcolor="rgba(255,255,255,.06)", zeroline=False, tickformat=".2f"),
         legend=dict(orientation="h", yanchor="bottom", y=1.01, x=0, font=dict(size=11)),
