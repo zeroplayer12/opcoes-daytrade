@@ -329,6 +329,12 @@ gráfico de candles do pregão com as linhas da operação. Abre direto em
   seguinte ao toque; o teste do toque vem antes de a parcial ou o breakeven moverem o stop.
   O código novo das duas foi entregue para atualizar no Profit. As listas de operações
   antigas se conferem com `stop_mercado=False`.
+- **A opção do sinal no cartão (15/09/2026):** ele opera comprando a call no sinal de compra e a put
+  no de venda. Cada posição aberta mostra a opção que as regras da aba Opções escolheriam (|Δ| 0,50–0,70,
+  série mensal padrão, 2 a 20 DU mais o seguinte, a mais líquida), o preço estimado dela agora, na
+  parcial, no alvo e no stop (Black-Scholes com a vol. implícita de hoje) e quanto ela perde por dia
+  parada. O vencimento pula o curto quando ele não cobre o tempo típico das operações vencedoras da
+  estratégia mais 3 DU (`DIAS_TIPICOS`: VALE3 2, PETR4 3, BPAC11 2, BBAS3 2, ITUB4 6, BOVA11 5).
 - **Lote de 200 ações (15/09/2026):** é o que ele opera. Com 200, a parcial da VALE3 e da
   PETR4 (metade da posição, 100 ações) executa; a da ITUB4 é fixa em 50 no código e
   continua sem executar. As listas de operações transcritas eram de 100 ações, e o

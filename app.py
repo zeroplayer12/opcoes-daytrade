@@ -2028,6 +2028,17 @@ section[data-testid="stSidebar"] .sb.first{border-top:none;padding-top:0;margin-
 .dx .opc-vazio{margin:14px 0 12px;font:400 13px/1.55 var(--sans);color:var(--t2);}
 .opc.pendente .at-tk{color:var(--t2);}
 .opc-t{display:block;font:600 15px/1.2 var(--sans);color:var(--t1);}
+.opx{margin-top:10px;padding:12px 0 2px;border-top:1px solid var(--ln);}
+.opx-h{display:flex;align-items:center;justify-content:space-between;gap:10px;}
+.opx-tk{font:600 16px/1 var(--mono);font-variant-ligatures:none;color:var(--t1);letter-spacing:.02em;}
+.opx-d{font:400 12px/1.4 var(--sans);color:var(--t3);margin-top:6px;}
+.opx-g{display:grid;grid-template-columns:repeat(var(--n,3),minmax(0,1fr));margin-top:8px;}
+.opx-g>div{padding:6px 8px 6px 0;min-width:0;}
+.opx-g span{display:block;font:500 10.5px/1 var(--sans);letter-spacing:.07em;text-transform:uppercase;color:var(--t3);}
+.opx-g b{display:block;font:600 14.5px/1.2 var(--sans);margin-top:5px;font-variant-numeric:tabular-nums;}
+.opx-g em{display:block;font:400 11px/1.3 var(--sans);font-style:normal;color:var(--t3);margin-top:3px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.dx .opx-n{margin:8px 0 0;font:400 12px/1.5 var(--sans);color:var(--t2);}
 .chips-l{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0 4px;}
 .dx .chips-l .chip{font:600 12.5px/1 var(--mono);font-variant-ligatures:none;padding:7px 10px;color:var(--t1);}
 .st-key-grafico_op{background:var(--vidro);border:1px solid rgba(255,255,255,.075);border-radius:var(--r);
@@ -3213,7 +3224,154 @@ def _reais(v: float) -> str:
     return f"{sinal}R$ {_num(abs(v), 2)}"
 
 
-def _cartao_operacao(ativo: str, est, res, formando, erro: str | None) -> str:
+# ---- opção do sinal: compra na ação → compra a call; venda → compra a put -------------
+# Tempo típico das operações vencedoras de cada estratégia, em dias úteis (backtest do
+# Profit de 2022 a 2026, versões atuais). A opção precisa durar esse tempo e ainda sobrar
+# FOLGA_DU dias úteis — perto do vencimento ela perde valor rápido mesmo com a ação a favor.
+DIAS_TIPICOS: dict[str, int] = {"VALE3": 2, "PETR4": 3, "BPAC11": 2, "BBAS3": 2, "ITUB4": 6, "BOVA11": 5}
+FOLGA_DU = 3
+
+
+_ULTIMA_GRADE: dict[str, tuple[datetime, pd.DataFrame]] = {}   # reserva se o site recusar
+
+
+@cache_dados(ttl=300, show_spinner=False)
+def _grade_sinal(ativo: str, hoje: date, taxa: float) -> pd.DataFrame:
+    """Grade só dos vencimentos mensais que as regras aceitam (2 a 20 DU e o seguinte),
+    já no formato do painel e renovada a cada 5 min. São 2 ou 3 consultas ao site por
+    ativo, e não as 8 da aba Opções: com várias posições abertas e atualização a cada
+    minuto, a busca completa chegou a ser recusada pelo opcoes.net.br."""
+    mensais = [v for v in vencimentos_do_site(ativo) if v["mensal"] and v["du"] >= DU_MIN_PADRAO]
+    alvos = [v for v in mensais if v["du"] <= DU_MAX_PADRAO] + [v for v in mensais if v["du"] > DU_MAX_PADRAO][:1]
+    partes, falhas = [], []
+    for v in alvos:
+        try:
+            parte = _rota_json(ativo, v["data"])
+            parte["Vencimento"] = v["data"].strftime("%d/%m/%Y")
+            partes.append(parte)
+        except Exception as exc:
+            falhas.append(f"{v['data']:%d/%m}: {exc}")
+    if not partes:
+        raise FalhaExtracao("; ".join(falhas) or "o site não listou vencimentos mensais")
+    return preparar_dataframe(pd.concat(partes, ignore_index=True), hoje=hoje, taxa=taxa)
+
+
+def opcao_para_sinal(ativo: str, lado: int, hoje: date, taxa: float) -> dict:
+    """A opção que as regras da aba Opções escolheriam para o sinal (|Δ| 0,50–0,70, série
+    mensal padrão, vencimento de 2 a 20 dias úteis mais o seguinte, a mais líquida), com
+    uma regra a mais: o vencimento precisa passar do tempo típico da operação + folga."""
+    velha = None
+    try:
+        df = _grade_sinal(ativo, hoje, taxa)
+        _ULTIMA_GRADE[ativo] = (datetime.now(BRT), df)
+    except Exception as exc:
+        if ativo not in _ULTIMA_GRADE:
+            raise
+        velha, df = _ULTIMA_GRADE[ativo]       # site recusou agora: usa a última grade boa
+        velha = (velha, str(exc))
+    mensais = sorted({v for v in df["vencimento"].dropna().unique() if eh_vencimento_mensal(v)})
+    no_ciclo = [v for v in mensais if DU_MIN_PADRAO <= dias_uteis(hoje, v) <= DU_MAX_PADRAO]
+    seguinte = next((v for v in mensais if dias_uteis(hoje, v) >= DU_MIN_PADRAO
+                     and (not no_ciclo or v > no_ciclo[-1])), None)
+    candidatos = no_ciclo + ([seguinte] if seguinte else [])
+    minimo = DIAS_TIPICOS.get(ativo, 2) + FOLGA_DU
+    ordem = [v for v in candidatos if dias_uteis(hoje, v) >= minimo] or candidatos[-1:]
+    tipo = "CALL" if lado > 0 else "PUT"
+    for venc in ordem:
+        filtrado, _ = aplicar_filtros(df, venc, DELTA_MIN_PADRAO, DELTA_MAX_PADRAO, 0, True, 1, True)
+        calls, puts = separar_calls_puts(filtrado)
+        lista = calls if tipo == "CALL" else puts
+        if not lista.empty:
+            pulado = candidatos[0] if candidatos and candidatos[0] < venc else None
+            return {"opcao": lista.iloc[0], "tipo": tipo, "venc": venc, "du": dias_uteis(hoje, venc),
+                    "pulado": pulado, "du_pulado": dias_uteis(hoje, pulado) if pulado else None,
+                    "minimo": minimo, "taxa": taxa, "velha": velha, "spot_site": df.attrs.get("spot")}
+    return {"erro": f"nenhuma {tipo.lower()} com |Δ| entre 0,50 e 0,70 e liquidez nos vencimentos elegíveis"}
+
+
+def _opcoes_das_posicoes(resultados: dict) -> dict:
+    """Opção sugerida para cada posição aberta, buscadas em paralelo (a grade demora ~5 s)."""
+    abertas = {a: r[0].aberta for a, r in resultados.items() if r and r[0].aberta is not None}
+    if not abertas:
+        return {}
+    hoje = datetime.now(BRT).date()
+    taxa = float(st.session_state.get("taxa_pct", 10.75)) / 100.0
+
+    def uma(item):
+        a, op = item
+        try:
+            return a, opcao_para_sinal(a, op.lado, hoje, taxa)
+        except Exception as exc:
+            return a, {"erro": str(exc)}
+
+    if NO_NAVEGADOR or len(abertas) == 1:
+        return dict(map(uma, abertas.items()))
+    try:
+        import threading
+        from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
+        ctx = get_script_run_ctx()
+    except Exception:
+        return dict(map(uma, abertas.items()))
+
+    def com_contexto(item):
+        if ctx is not None:
+            add_script_run_ctx(threading.current_thread(), ctx)
+        return uma(item)
+
+    with ThreadPoolExecutor(max_workers=min(6, len(abertas))) as pool:
+        return dict(pool.map(com_contexto, abertas.items()))
+
+
+def _bloco_opcao(ativo: str, est, op, preco: float, info: dict | None) -> str:
+    """Opção a comprar para a posição e o preço estimado dela nos níveis da estratégia."""
+    if not info:
+        return ""
+    if info.get("erro"):
+        motivo = str(info["erro"]).strip().rstrip(".")
+        return (f'<div class="opx"><p class="opx-n">Opção sugerida indisponível agora ({_esc(motivo)}). '
+                f'Confira na aba Opções; o painel tenta de novo na próxima atualização.</p></div>')
+    o, tipo, du, taxa = info["opcao"], info["tipo"], info["du"], info["taxa"]
+    k, iv, ultimo = float(o["strike"]), o.get("vol_impl"), o.get("ultimo")
+    tem_iv = iv is not None and not pd.isna(iv) and iv > 0
+
+    def valor(s, dias=du):
+        if not tem_iv or s is None or pd.isna(s):
+            return None
+        return _black_scholes(float(s), k, max(dias, 0) / 252.0, float(iv) / 100.0, taxa, tipo)[0]
+
+    niveis = [("Agora", valor(preco), f"ação {_num(preco, 2)}")]
+    if not pd.isna(op.alvo1) and getattr(est, "parcial_no_profit", True) and not op.parcial_feita:
+        niveis.append(("Na parcial", valor(op.alvo1), f"ação {_num(op.alvo1, 2)}"))
+    niveis.append(("No alvo", valor(op.alvo2), f"ação {_num(op.alvo2, 2)}"))
+    niveis.append(("No zero a zero" if op.stop_movido else "No stop", valor(op.stop), f"ação {_num(op.stop, 2)}"))
+    grade = "".join(f'<div><span>{r}</span><b>{_moeda(v) if v is not None else "—"}</b><em>{_esc(d)}</em></div>'
+                    for r, v, d in niveis)
+    notas = []
+    tipico = DIAS_TIPICOS.get(ativo, 2)
+    hoje_v, amanha, depois = valor(preco), valor(preco, du - 1), valor(preco, du - tipico)
+    if None not in (hoje_v, amanha, depois):
+        notas.append(f"Com a ação parada, perde ~{_moeda(hoje_v - amanha)} por dia; em {tipico} "
+                     f"{'dia útil' if tipico == 1 else 'dias úteis'} (tempo típico das operações vencedoras), "
+                     f"~{_moeda(hoje_v - depois)}.")
+    if info.get("pulado"):
+        notas.append(f"O vencimento curto ({info['pulado']:%d/%m}, {info['du_pulado']} DU) ficou de fora: "
+                     f"a {ativo} costuma precisar de {tipico} DU e pede pelo menos {info['minimo']} DU até o vencimento.")
+    if info.get("velha"):
+        notas.append(f"O site não respondeu agora; grade das {info['velha'][0]:%H:%M}.")
+    spot_site = info.get("spot_site")
+    quando_site = f" (com a ação a ~{_moeda(spot_site)}, dado atrasado)" if spot_site else ""
+    notas.append(f"Último negócio no site: {_moeda(ultimo)}{quando_site}. Preços estimados por Black-Scholes com a "
+                 f"volatilidade implícita de hoje — confira o book antes de mandar a ordem.")
+    lado_css = "call" if tipo == "CALL" else "put"
+    return (f'<div class="opx {lado_css}"><div class="opx-h"><span class="side"><i></i>Comprar {tipo.lower()}</span>'
+            f'<b class="opx-tk">{_esc(o["ticker"])}</b></div>'
+            f'<div class="opx-d">strike {_moeda(k)} · vence {info["venc"]:%d/%m} ({du} DU) · '
+            f'Δ {_num(o["delta"], 2, sinal=True)} · vol. impl. {_num(iv, 0, sufixo="%") if tem_iv else "—"}</div>'
+            f'<div class="opx-g" style="--n:{len(niveis)}">{grade}</div>'
+            + "".join(f'<p class="opx-n">{n}</p>' for n in notas) + "</div>")
+
+
+def _cartao_operacao(ativo: str, est, res, formando, erro: str | None, opcao: dict | None = None) -> str:
     """Cartão de um ativo: posição em andamento (alvo, parcial, stop e resultado) ou a falta dela."""
     if est is None:
         return (f'<div class="card opc pendente"><div class="opc-h"><div><span class="at-tk">{ativo}</span>'
@@ -3300,7 +3458,7 @@ def _cartao_operacao(ativo: str, est, res, formando, erro: str | None) -> str:
             f'{meio}'
             f'<div><span>Stop</span><b>{_moeda(op.stop)}</b><em>{stop_txt}</em></div>'
             f'<div><span>No pregão</span><b>{_reais(no_dia)}</b><em>{len(fechadas)} fechada(s)</em></div>'
-            f"</div></div>")
+            f"</div>{_bloco_opcao(ativo, est, op, preco, opcao)}</div>")
 
 
 def _cartao_pendentes(ativos: list[str]) -> str:
@@ -3408,7 +3566,9 @@ def pagina_operacoes(cabecalho) -> None:
                    "outro até o alvo ou o stop.")
         st.caption("O pregão de hoje vem do Profit em tempo real, pelo RTD, enquanto o coletor_rtd.py estiver "
                    "gravando (ele sobe junto com o painel). Sem ele, os candles vêm do Yahoo, com cerca de 15 min "
-                   "de atraso; o histórico dos dias anteriores vem sempre do Yahoo.")
+                   "de atraso. Os dias anteriores vêm do Yahoo, ou do próprio Profit nos pregões que o coletor gravou.")
+        st.caption("Em cada posição aberta aparece a opção a comprar (call na compra, put na venda), escolhida "
+                   "pelas regras da aba Opções, com o preço estimado dela no alvo e no stop.")
     estado, hora = _estado_rtd()
     if estado == "vivo":
         fonte = f'<span class="pill"><span class="dot"></span><b>Profit</b> · tempo real</span>'
@@ -3433,8 +3593,9 @@ def _painel_operacoes() -> None:
             resultados[ativo] = ope.situacao(est, barras_estrategia(ativo))
         except Exception as exc:
             erros[ativo] = str(exc)
+    opcoes = _opcoes_das_posicoes(resultados)
     cartoes = "".join(
-        _cartao_operacao(a, ope.ESTRATEGIAS[a], *(resultados.get(a) or (None, None)), erros.get(a))
+        _cartao_operacao(a, ope.ESTRATEGIAS[a], *(resultados.get(a) or (None, None)), erros.get(a), opcoes.get(a))
         for a in ATIVOS if a in ope.ESTRATEGIAS)
     faltam = [a for a in ATIVOS if a not in ope.ESTRATEGIAS]
     if faltam:
