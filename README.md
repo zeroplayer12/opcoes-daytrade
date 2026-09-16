@@ -373,8 +373,27 @@ gráfico de candles do pregão com as linhas da operação. Abre direto em
   `parar-painel.cmd` encerra o painel, o coletor e o vigia.
 - **O servidor RTD do Profit atende um cliente por vez:** outro programa que se conectar
   (um teste, um segundo coletor) toma a conexão, e o primeiro para de receber sem aviso nenhum
-  (visto em 15/09/2026). Por isso, no pregão, o coletor reconecta sozinho se passar 3 minutos
-  sem cotação nova — e qualquer leitura nova do RTD tem de entrar no próprio coletor.
+  (visto em 15/09/2026) — qualquer leitura nova do RTD tem de entrar no próprio coletor.
+- **Quando o Profit para de mandar cotação (15/09/2026):** aconteceu duas vezes no mesmo
+  pregão — das 13:04 às 15:05 e das 16:08 em diante — com o profitchart.exe de pé. O que o
+  painel faz agora:
+  - o coletor **não grava o preço parado**. A cada conexão ele registra o estado dos ativos;
+    se o último negócio (HOR) é mais de 5 min mais velho que o relógio, a linha é só uma cópia
+    do preço de antes e fica de fora. Sem isso, cada reconexão vira um candle achatado — na
+    primeira versão do vigia de conexão foram 33 linhas falsas, das 16:14 às 18:07, e o gráfico
+    do painel divergiu do Profit;
+  - `barras_rtd` descarta essas linhas também na leitura, para os arquivos já gravados;
+  - o coletor reconecta depois de **5 min** de silêncio no pregão e **dobra a espera** a cada
+    tentativa vã, até 30 min (o silêncio costuma ser do lado do Profit, e reconectar não resolve);
+  - o buraco deixado no meio do pregão volta a ser preenchido: `juntar_barras` deixa o Yahoo
+    valer onde o RTD não tem barra nenhuma, e o que ainda faltar sai do **cache de candles do
+    próprio Profit** (`completar_com_profit`), que tem leilão e after-market. Conferido no dia:
+    23 candles de 20 min da PETR4, 45 de 10 min da VALE3 e 30 de 15 min da BPAC11, todos iguais
+    aos do Profit, com diferença máxima de R$ 0,01 no fechamento;
+  - a pílula do cabeçalho passa a dizer **"Profit · sem cotação desde HH:MM"** (antes ela olhava
+    a data do arquivo, que continuava sendo escrito, e dizia "tempo real");
+  - se o coletor ou o vigia morrerem (fechar o Profit derruba o coletor junto), o painel sobe os
+    dois de novo em até 1 minuto — cada um tem mutex nomeado, então cópia repetida sai sozinha.
 - **Opção ao vivo (15/09/2026):** o opcoes.net.br grátis mostra o último negócio, muitas vezes
   do pregão anterior. O painel e o vigia anotam em `dados_rt/opcoes/assinar.json` a opção
   sugerida de cada posição, e o coletor assina ela também no RTD — o Profit entrega opção sem

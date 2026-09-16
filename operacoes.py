@@ -777,7 +777,16 @@ def barras_rtd(ativo: str, pasta, dia) -> pd.DataFrame:
         # local — a primeira linha do dia traz o HOR do último negócio de ontem
         hor = pd.to_datetime(f"{dia:%Y-%m-%d} " + df["hor"].astype(str), format="%Y-%m-%d %H:%M:%S",
                              errors="coerce").dt.tz_localize(BRT)
-        idx = hor.where((hor - idx).abs() <= pd.Timedelta(minutes=5), idx)
+        # o coletor regrava o estado inteiro a cada conexão: se o último negócio é bem mais
+        # velho que o relógio, a linha só repete um preço parado (o Profit deixou de mandar
+        # cotação). Entrar com ela viraria candle achatado e ainda esconderia o Yahoo do
+        # período — o lugar dela é fora (em 15/09/2026, 33 linhas das 16:14 às 18:07)
+        parada = hor.notna() & ((idx - hor) > pd.Timedelta(minutes=5))
+        if parada.any():
+            df, idx, hor = df[~parada], idx[~parada], hor[~parada]
+            if df.empty:
+                return pd.DataFrame()
+        idx = hor.where(hor.notna() & ((hor - idx).abs() <= pd.Timedelta(minutes=5)), idx)
     s = pd.DataFrame({"ult": df["ult"].to_numpy(), "qtt": df["qtt"].to_numpy()}, index=idx.to_numpy())
     s.index = pd.DatetimeIndex(s.index).tz_convert(BRT)
     s["vol"] = s["qtt"].diff().clip(lower=0).fillna(0)       # na ordem em que chegou
@@ -806,7 +815,9 @@ def juntar_barras(yahoo: pd.DataFrame, rtd: pd.DataFrame) -> pd.DataFrame:
     if rtd.empty:
         return yahoo
     fim = rtd.index[-1] + pd.Timedelta(minutes=5)
-    fora = (yahoo.index < primeira_inteira) | (yahoo.index >= fim)
+    # dentro do trecho gravado o RTD manda, menos onde ele não tem barra nenhuma: se o Profit
+    # parar de mandar cotação no meio do pregão, esse pedaço fica com o Yahoo em vez de vazio
+    fora = (yahoo.index < primeira_inteira) | (yahoo.index >= fim) | ~yahoo.index.isin(rtd.index)
     return pd.concat([yahoo[fora], rtd]).sort_index()
 
 
@@ -927,6 +938,37 @@ def situacao(est: Estrategia, barras_5m: pd.DataFrame,
     return simular(est, candles), None
 
 
+def inicio_do_candle(idx: pd.DatetimeIndex, minutos: int) -> pd.DatetimeIndex:
+    """Início do candle de `minutos` a que cada barra pertence, no alinhamento do Profit: o
+    leilão de fechamento (17:00–17:29) entra no último candle do pregão e o after-market
+    recomeça a contagem às 17:30."""
+    hm = np.asarray(idx.hour * 60 + idx.minute)
+    efetivo = np.where((hm >= 17 * 60) & (hm < 17 * 60 + 30), 16 * 60 + 55, hm)
+    base = np.where(efetivo >= 17 * 60 + 30, 17 * 60 + 30, 0)
+    return idx.normalize() + pd.to_timedelta(base + (efetivo - base) // minutos * minutos, unit="min")
+
+
+def completar_com_profit(barras: pd.DataFrame, profit: pd.DataFrame, minutos: int,
+                         rtd: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Tapa o que falta com os candles que o próprio Profit guarda no disco.
+
+    `profit` vem no tempo gráfico da estratégia e entra como uma barra única no início de cada
+    período — o agrupamento devolve o mesmo candle. O que o coletor gravou continua vindo dele
+    (tick a tick, com o candle em formação); o resto, que no Yahoo sai pior ou nem existe
+    (after-market, leilão), passa a sair igual ao gráfico do Profit.
+    """
+    if profit is None or profit.empty or barras.empty:
+        return barras
+    gravados = set(inicio_do_candle(rtd.index, minutos)) if rtd is not None and not rtd.empty else set()
+    novos = profit[[t not in gravados for t in inicio_do_candle(profit.index, minutos)]]
+    if novos.empty:
+        return barras
+    trocados = set(inicio_do_candle(novos.index, minutos))
+    manter = [t not in trocados for t in inicio_do_candle(barras.index, minutos)]
+    return pd.concat([barras[manter],
+                      novos.reindex(columns=["open", "high", "low", "close", "volume"])]).sort_index()
+
+
 def candles_de_5min(barras_5m: pd.DataFrame, minutos: int) -> pd.DataFrame:
     """Agrupa barras de 5 min no tempo gráfico da estratégia como o gráfico do Profit.
 
@@ -937,12 +979,7 @@ def candles_de_5min(barras_5m: pd.DataFrame, minutos: int) -> pd.DataFrame:
     """
     if barras_5m.empty:
         return barras_5m
-    hm = np.asarray(barras_5m.index.hour * 60 + barras_5m.index.minute)
-    efetivo = np.where((hm >= 17 * 60) & (hm < 17 * 60 + 30), 16 * 60 + 55, hm)
-    base = np.where(efetivo >= 17 * 60 + 30, 17 * 60 + 30, 0)
-    inicio = base + (efetivo - base) // minutos * minutos
-    chave = barras_5m.index.normalize() + pd.to_timedelta(inicio, unit="min")
-    agrup = barras_5m.groupby(chave)
+    agrup = barras_5m.groupby(inicio_do_candle(barras_5m.index, minutos))
     df = pd.DataFrame({"open": agrup["open"].first(), "high": agrup["high"].max(),
                        "low": agrup["low"].min(), "close": agrup["close"].last(),
                        "volume": agrup["volume"].sum()})

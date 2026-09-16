@@ -28,10 +28,12 @@
 from __future__ import annotations
 
 import csv
+import ctypes
 import io
 import json
 import math
 import re
+import subprocess
 import sys
 import time
 import unicodedata
@@ -3217,6 +3219,8 @@ def cotacao_ao_vivo(ticker: str) -> dict | None:
         return None
     if not d or not d.get("ult") or d["ult"] <= 0 or d.get("dat") != f"{datetime.now(BRT):%d/%m/%Y}":
         return None
+    if time.time() - float(d.get("ts") or 0) > 600:
+        return None       # coletor parado: a cotação continua sendo a última, mas não é "ao vivo"
     return {"fonte": "profit", "ult": d["ult"], "compra": d.get("compra"), "venda": d.get("venda"),
             "hora": d.get("hor")}
 
@@ -3246,6 +3250,19 @@ def cotacao_opcao(ativo: str, ticker: str) -> dict | None:
     return {"fonte": "b3", "ult": o["ult"], "compra": None, "venda": None, "hora": o["hora"], "spot": a["ult"]}
 
 
+@cache_dados(ttl=120, show_spinner=False)
+def _candles_profit(ativo: str, minutos: int, dia) -> pd.DataFrame:
+    """Candles do pregão `dia` no cache do próprio Profit (%APPDATA%\\Nelogica\\…): a mesma
+    fonte do gráfico dele, com leilão e after-market. Só os já fechados — o Profit grava o
+    candle quando ele fecha. Fora do PC dele não existe, e volta vazio."""
+    try:
+        import resultados
+        d = resultados.candles(ativo, minutos)
+    except Exception:
+        return pd.DataFrame()
+    return d[d.index.date == dia]
+
+
 def barras_estrategia(ativo: str) -> pd.DataFrame:
     """Histórico longo mais o pregão de agora, o mais parecido possível com o gráfico do
     Profit. As estratégias carregam posição de um dia para o outro, então a simulação
@@ -3264,23 +3281,76 @@ def barras_estrategia(ativo: str) -> pd.DataFrame:
         for dia in ope.dias_rtd(PASTA_RT):
             if barras.index[0].date() <= dia < hoje:
                 barras = ope.juntar_barras(barras, _barras_rtd_passado(ativo, dia))
-    barras = ope.juntar_barras(barras, ope.barras_rtd(ativo, PASTA_RT, hoje))
+    rtd_hoje = ope.barras_rtd(ativo, PASTA_RT, hoje)
+    barras = ope.juntar_barras(barras, rtd_hoje)
+    est = ope.ESTRATEGIAS.get(ativo)
+    if est is not None:
+        # o que o coletor não gravou hoje — Profit mudo, leilão, after-market — sai do cache dele
+        barras = ope.completar_com_profit(barras, _candles_profit(ativo, est.minutos, hoje),
+                                          est.minutos, rtd_hoje)
     try:
         return ope.ajustar_proventos(barras, _proventos(ativo), ativo)
     except Exception:
         return barras
 
 
+def _ultima_cotacao_rtd() -> datetime | None:
+    """Hora do último negócio gravado hoje (o HOR do Profit), lendo só o fim do arquivo. É ela
+    que diz se o Profit está mandando cotação — a data do arquivo não serve, porque o coletor
+    escreve nele a cada conexão mesmo com o RTD mudo."""
+    try:
+        with open(PASTA_RT / f"{datetime.now(BRT):%Y-%m-%d}.csv", "rb") as f:
+            f.seek(0, io.SEEK_END)
+            f.seek(max(0, f.tell() - 20000))
+            linhas = f.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return None
+    hoje, horas = datetime.now(BRT).date(), []
+    for linha in linhas[-300:]:
+        try:
+            horas.append(datetime.combine(hoje, datetime.strptime(linha.rsplit(",", 1)[-1].strip(),
+                                                                  "%H:%M:%S").time(), BRT))
+        except ValueError:
+            pass
+    return max(horas) if horas else None
+
+
 def _estado_rtd() -> tuple[str, str]:
-    """('vivo' | 'encerrado' | 'fora', hora da última cotação) conforme o arquivo do coletor."""
-    arq = PASTA_RT / f"{datetime.now(BRT):%Y-%m-%d}.csv"
-    if not arq.exists():
+    """('vivo' | 'parado' | 'encerrado' | 'fora', hora do último negócio) pelo que o coletor gravou."""
+    ultima = _ultima_cotacao_rtd()
+    if ultima is None:
         return "fora", ""
-    quando = datetime.fromtimestamp(arq.stat().st_mtime, BRT)
     agora = datetime.now(BRT)
-    if (agora - quando).total_seconds() < 180 and "10:00" <= agora.strftime("%H:%M") <= "18:30":
-        return "vivo", f"{quando:%H:%M:%S}"
-    return ("encerrado" if agora.strftime("%H:%M") > "18:30" else "fora"), f"{quando:%H:%M}"
+    if agora.strftime("%H:%M") > "18:30":
+        return "encerrado", f"{ultima:%H:%M}"
+    if (agora - ultima).total_seconds() < 180:
+        return "vivo", f"{ultima:%H:%M:%S}"
+    return "parado", f"{ultima:%H:%M}"
+
+
+_SERVICOS = {"quando": 0.0}
+_DE_FUNDO = (("coletor_rtd.py", "Local\\PainelDayTradeColetorRTD"),
+             ("vigia.py", "Local\\PainelDayTradeVigia"))
+
+
+def _garante_servicos() -> None:
+    """Sobe de novo o coletor RTD e o vigia se tiverem morrido — o Profit fechando leva o
+    coletor junto, e sem ele o pregão passa a vir do Yahoo, atrasado, sem ninguém notar (foi o
+    que aconteceu em 15/09/2026). Cada um segura um mutex nomeado: uma segunda cópia sai sozinha."""
+    if NO_NAVEGADOR or sys.platform != "win32" or time.time() - _SERVICOS["quando"] < 60:
+        return
+    _SERVICOS["quando"] = time.time()
+    for arquivo, mutex in _DE_FUNDO:
+        alca = ctypes.windll.kernel32.OpenMutexW(0x00100000, False, mutex)      # SYNCHRONIZE
+        if alca:
+            ctypes.windll.kernel32.CloseHandle(alca)
+            continue
+        try:
+            subprocess.Popen([sys.executable, arquivo], cwd=str(Path(__file__).resolve().parent),
+                             creationflags=0x00000008 | 0x08000000,   # DETACHED_PROCESS | CREATE_NO_WINDOW
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError:
+            pass
 
 
 def _quando(t, dia) -> str:
@@ -3883,9 +3953,15 @@ def pagina_operacoes(cabecalho) -> None:
                    "balão com som nesta página (com a atualização automática ligada) e, pelo vigia.py, "
                    "notificação no Windows e no Telegram — mesmo com o navegador fechado.")
         testar = st.button("Testar avisos", icon=":material/notifications:", key="testar_avisos", **_LARGURA)
+    _garante_servicos()
     estado, hora = _estado_rtd()
     if estado == "vivo":
-        fonte = f'<span class="pill"><span class="dot"></span><b>Profit</b> · tempo real</span>'
+        fonte = '<span class="pill"><span class="dot"></span><b>Profit</b> · tempo real</span>'
+    elif estado == "parado":
+        fonte = ('<span class="pill" title="O coletor está ligado, mas o Profit parou de mandar cotação. '
+                 'Confira se ele está conectado ao mercado; enquanto isso o pregão vem do Yahoo e dos '
+                 f'candles que o Profit guarda no disco."><span class="dot off"></span><b>Profit</b> · '
+                 f'sem cotação desde {hora}</span>')
     elif estado == "encerrado":
         fonte = f'<span class="pill"><span class="dot off"></span><b>Profit</b> · pregão encerrado ({hora})</span>'
     else:
@@ -3904,6 +3980,7 @@ def pagina_operacoes(cabecalho) -> None:
 
 def _painel_operacoes() -> None:
     """Cartões dos seis ativos e o gráfico do ativo escolhido; roda como fragmento."""
+    _garante_servicos()
     resultados, erros = {}, {}
     for ativo, est in ope.ESTRATEGIAS.items():
         try:

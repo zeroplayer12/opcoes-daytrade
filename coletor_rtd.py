@@ -55,7 +55,8 @@ ASSINAR = PASTA_OPC / "assinar.json"         # {"PETRJ500": "2026-09-15", ...} �
 AGORA = PASTA_OPC / "agora.json"             # última cotação de cada opção assinada
 CAMPOS_OPC = ["ULT", "OCP", "OVD", "QTT", "NEG", "HOR", "DAT"]   # OCP/OVD = melhor compra/venda
 COLUNAS_OPC = ["ts", "hora", "opcao", "ult", "compra", "venda", "qtt", "neg", "hor"]
-SILENCIO_MAX = 180                           # s sem cotação nova no pregão → reconecta
+SILENCIO_MAX = 300                           # s sem cotação nova no pregão → tenta reconectar
+SILENCIO_TETO = 1800                         # ... dobrando a espera até aqui, se não voltar
 
 
 def log(msg: str) -> None:
@@ -102,6 +103,19 @@ def opcoes_pedidas() -> list[str]:
     return sorted(t for t, dia in pedidos.items() if dia == hoje and re.fullmatch(r"[A-Z0-9]{5,12}", str(t)))[:40]
 
 
+def _parado(hor, agora, limite: int = 300) -> bool:
+    """O último negócio (HOR) é bem mais velho que o relógio? Então gravar essa linha só
+    repetiria um preço parado — é o que sai do snapshot de cada conexão quando o Profit
+    deixou de mandar cotação, e no painel viraria candle achatado."""
+    try:
+        h, m, s = (int(x) for x in str(hor).split(":"))
+        negocio = agora.replace(hour=h, minute=m, second=s, microsecond=0)
+    except (ValueError, AttributeError, TypeError):
+        return False
+    atraso = (agora - negocio).total_seconds()
+    return atraso > limite or atraso < -60        # -60 s: HOR de outro pregão
+
+
 def _numero(v):
     if v is None:
         return None
@@ -143,7 +157,7 @@ class Gravador:
         for a in ativos:
             e = estado[a]
             ult = _numero(e.get("ULT"))
-            if ult is None or ult <= 0:
+            if ult is None or ult <= 0 or _parado(e.get("HOR"), agora):
                 continue
             self.escritor.writerow([f"{agora.timestamp():.3f}", f"{agora:%H:%M:%S}", a, round(ult, 6),
                                     _numero(e.get("QTT")), _numero(e.get("VOL")), _numero(e.get("NEG")),
@@ -165,6 +179,8 @@ class Gravador:
                 w.writerow(COLUNAS_OPC)
             for t in sorted(opcoes):
                 e = estado[t]
+                if t in self.opcoes and _parado(e.get("HOR"), agora):
+                    continue          # opção sem negócio novo: não repete a linha
                 linha = {"ult": _numero(e.get("ULT")), "compra": _numero(e.get("OCP")),
                          "venda": _numero(e.get("OVD")), "qtt": _numero(e.get("QTT")),
                          "neg": _numero(e.get("NEG")), "hor": e.get("HOR"), "dat": e.get("DAT")}
@@ -204,6 +220,9 @@ def _pares(resposta):
     if len(matriz) == 2 and all(isinstance(x, (list, tuple)) for x in matriz) and len(matriz[0]) == len(matriz[1]):
         return list(zip(matriz[0], matriz[1]))
     return [(linha[0], linha[1]) for linha in matriz if isinstance(linha, (list, tuple)) and len(linha) >= 2]
+
+
+_ESPERA = [SILENCIO_MAX]     # silêncio aceito antes de reconectar (dobra a cada tentativa vã)
 
 
 def coleta(gravador: Gravador, duracao: float | None = None) -> None:
@@ -272,6 +291,7 @@ def coleta(gravador: Gravador, duracao: float | None = None) -> None:
         assina_opcoes()
         cru_logado = False
         checagem = pedidos = ultimo_aviso = time.time()
+        silencio = _ESPERA[0]
         while fim is None or time.time() < fim:
             comtypes.client.PumpEvents(0.5)
             if aviso.chegou < 0:
@@ -279,6 +299,7 @@ def coleta(gravador: Gravador, duracao: float | None = None) -> None:
             if aviso.chegou:
                 aviso.chegou = 0
                 ultimo_aviso = time.time()
+                silencio, _ESPERA[0] = SILENCIO_MAX, SILENCIO_MAX   # veio cotação: espera normal
                 resposta = srv.RefreshData(0)
                 pares = _pares(resposta)
                 if not cru_logado:
@@ -302,9 +323,13 @@ def coleta(gravador: Gravador, duracao: float | None = None) -> None:
                 checagem = time.time()
                 if not profit_aberto():
                     raise ConnectionError("o Profit foi fechado")
-                if em_pregao() and time.time() - ultimo_aviso > SILENCIO_MAX:
-                    raise ConnectionError(f"nenhuma cotação nova há {SILENCIO_MAX // 60} min (outro programa "
-                                          "pode ter tomado a conexão RTD); reconectando")
+                if em_pregao() and time.time() - ultimo_aviso > silencio:
+                    _ESPERA[0] = min(silencio * 2, SILENCIO_TETO)   # não voltou: tentar menos vezes
+                    ultimo = max((e.get("HOR") for e in estado.values() if e.get("HOR")), default="?")
+                    raise ConnectionError(f"nenhuma cotação nova há {silencio // 60} min (último negócio às "
+                                          f"{ultimo}; o Profit pode ter perdido a conexão, ou outro programa "
+                                          f"tomou o RTD); reconectando, e o próximo aviso só depois de "
+                                          f"{_ESPERA[0] // 60} min de silêncio")
     finally:
         for t in topicos:
             try:
