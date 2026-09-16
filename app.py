@@ -2048,7 +2048,7 @@ section[data-testid="stSidebar"] .sb.first{border-top:none;padding-top:0;margin-
 .opx-h{display:flex;align-items:center;justify-content:space-between;gap:10px;}
 .opx-tk{font:600 16px/1 var(--mono);font-variant-ligatures:none;color:var(--t1);letter-spacing:.02em;}
 .opx-d{font:400 12px/1.4 var(--sans);color:var(--t3);margin-top:6px;}
-.opx-g{display:grid;grid-template-columns:repeat(var(--n,3),minmax(0,1fr));margin-top:8px;}
+.opx-g{display:grid;grid-template-columns:repeat(auto-fit,minmax(104px,1fr));margin-top:8px;}
 .opx-g>div{padding:6px 8px 6px 0;min-width:0;}
 .opx-g span{display:block;font:500 10.5px/1 var(--sans);letter-spacing:.07em;text-transform:uppercase;color:var(--t3);}
 .opx-g b{display:block;font:600 14.5px/1.2 var(--sans);margin-top:5px;font-variant-numeric:tabular-nums;}
@@ -2497,7 +2497,7 @@ def _tabela_ranking(df_lado: pd.DataFrame, lado: str, n_total: int) -> str:
             f'<thead><tr>{th}</tr></thead><tbody>{"".join(linhas)}</tbody></table></div></div>')
 
 
-def _funil(funil: list[tuple[str, int]], nota: str) -> str:
+def _funil(funil: list[tuple[str, int]], nota: str = "") -> str:
     total = max(1, funil[0][1]) if funil else 1
     passos = "".join(
         f'<div class="fs"><span>{_esc(rotulo)}</span><b>{_num(n, 0)}</b>'
@@ -2505,19 +2505,14 @@ def _funil(funil: list[tuple[str, int]], nota: str) -> str:
         for rotulo, n in funil)
     return (f'<div class="card"><div class="card-h"><div class="t">{_ic("filtro")}Como a escolha foi feita</div>'
             f'<div class="d">cada etapa filtra a anterior; o topo da liquidez vence</div></div>'
-            f'<div class="funil">{passos}</div><div class="note">{_ic("info")}<span>{nota}</span></div></div>')
+            f'<div class="funil">{passos}</div>'
+            + (f'<div class="note">{_ic("info")}<span>{nota}</span></div>' if nota else "") + "</div>")
 
 
 def _estado_vazio(icone: str, titulo: str, texto: str, itens: list[str] | None = None) -> None:
     lista = ("<ul>" + "".join(f"<li>{i}</li>" for i in itens) + "</ul>") if itens else ""
     _html(f'<div class="dx"><div class="empty-st"><div class="t">{_ic(icone)}{_esc(titulo)}</div>'
           f"<p>{texto}</p>{lista}</div></div>")
-
-
-def _rodape(fonte: str = "Dados do opcoes.net.br podem ter atraso — confirme preço e liquidez "
-                         "no home broker antes de operar.") -> None:
-    _html('<div class="dx"><div class="foot"><span>Ferramenta de apoio à decisão para uso próprio. '
-          f"Não constitui recomendação de investimento.</span><span>{_esc(fonte)}</span></div></div>")
 
 
 def _sb(titulo: str, primeiro: bool = False) -> None:
@@ -2959,14 +2954,12 @@ def pagina_opcoes(cabecalho, hoje: date) -> None:
         _estado_vazio("alerta", "Não consegui buscar os dados",
                       f"{_esc(erro)}<br>Enquanto isso, exporte a grade no opcoes.net.br e use "
                       f"<b>Arquivo</b> na barra lateral, ou <b>Demo</b> para ver a interface.")
-        _rodape()
         return
     if estado is None:
         _html(_cabecalho("aguardando arquivo", None, None, hoje, False), cabecalho)
         _estado_vazio("fonte", "Envie a grade de opções",
                       "Exporte a grade no opcoes.net.br (CSV ou Excel) e envie pela barra lateral. "
                       "O painel reconhece as colunas mesmo que o site mude os nomes.")
-        _rodape()
         return
 
     try:
@@ -2974,7 +2967,6 @@ def pagina_opcoes(cabecalho, hoje: date) -> None:
     except Exception as exc:
         _html(_cabecalho(estado["fonte"], estado.get("coletado"), None, hoje, estado["demo"]), cabecalho)
         _estado_vazio("alerta", "Não consegui interpretar a grade recebida", _esc(exc))
-        _rodape()
         return
 
     spot = df.attrs.get("spot")
@@ -3013,7 +3005,6 @@ def pagina_opcoes(cabecalho, hoje: date) -> None:
                       "em que nenhum cai na janela. Ajuste a janela na barra lateral, ligue "
                       "<b>Mostrar vencimentos fora da janela</b>, ou desligue <b>Somente séries mensais padrão</b>.",
                       [f"{v:%d/%m/%Y} — {dias_uteis(hoje, v)} dias úteis" for v in mensais])
-        _rodape()
         return
 
     # ---------------- Filtros e ranking -----------------------------------------
@@ -3042,13 +3033,6 @@ def pagina_opcoes(cabecalho, hoje: date) -> None:
     put_html = (_cartao_sinal(puts.iloc[0], "put", len(puts), delta_min, delta_max) if not puts.empty
                 else _cartao_vazio("put", f"Nenhuma put com {faixa} passou nos filtros neste vencimento."))
 
-    calculados = int(df["delta_calculado"].sum()) if "delta_calculado" in df.columns else 0
-    nota = ("<b>Delta calculado pelo painel</b> — o opcoes.net.br não entrega os gregos no plano "
-            "gratuito. A volatilidade implícita é invertida do preço negociado e o Delta sai por "
-            f"Black-Scholes, com o ativo a {_moeda(spot)} e taxa de {_num(taxa_pct, 2, sufixo='%')} a.a. "
-            f"({calculados} opções).") if calculados else (
-            "Delta lido da própria fonte de dados.")
-
     _html(f"""
     <div class="dx">
       {_kpis(ativo, spot, venc, dias_uteis(hoje, venc), iv_atm, len(calls), len(puts), len(df), vol_calls, vol_puts)}
@@ -3057,7 +3041,7 @@ def pagina_opcoes(cabecalho, hoje: date) -> None:
         <div class="a-put">{put_html}</div>
         <div class="a-chart">{_grafico_liquidez(grade_venc, set(filtrado["ticker"]), spot, picks)}</div>
         <div class="a-tabs">{_tabela_ranking(calls, "call", len(calls))}{_tabela_ranking(puts, "put", len(puts))}</div>
-        <div class="a-funil">{_funil(funil, nota)}</div>
+        <div class="a-funil">{_funil(funil)}</div>
       </div>
     </div>""")
 
@@ -3073,8 +3057,6 @@ def pagina_opcoes(cabecalho, hoje: date) -> None:
     with st.expander("Registro da coleta", icon=":material/receipt_long:"):
         for linha in estado.get("log", []):
             st.caption(linha)
-
-    _rodape()
 
 
 def pagina_correlacoes(cabecalho) -> None:
@@ -3366,6 +3348,15 @@ def _quando(t, dia) -> str:
     return f"{t:%H:%M}" if t.date() == dia else f"{t:%d/%m %H:%M}"
 
 
+def _pct_resultado(op, preco: float | None = None) -> float:
+    """Resultado da operação em % sobre o valor da entrada (preço × quantidade). É como ele
+    acompanha, e não muda de escala quando o lote muda."""
+    ent = op.entrada
+    if ent is None or not ent.preco or not ent.qtd:
+        return 0.0
+    return op.resultado(preco) / abs(ent.preco * ent.qtd) * 100
+
+
 def _reais(v: float) -> str:
     """+R$ 66,00 / −R$ 12,50 — resultado com sinal na frente do símbolo."""
     if v is None or pd.isna(v):
@@ -3475,6 +3466,29 @@ def _opcoes_das_posicoes(resultados: dict) -> dict:
 FONTES_OPCAO = {"profit": "Profit ao vivo", "b3": "B3, ~15 min de atraso", "site": "opcoes.net.br"}
 
 
+@cache_dados(ttl=120, show_spinner=False)
+def _opcao_gravada(ticker: str, quando) -> tuple | None:
+    """Primeira cotação da opção que o coletor gravou a partir do sinal (até 1 h depois).
+
+    O painel e o vigia mandam assinar a opção assim que o sinal aparece, então, quando existe,
+    essa linha é de poucos minutos depois dele — é o preço que ele teria pago."""
+    try:
+        d = pd.read_csv(PASTA_OPC / f"{quando:%Y-%m-%d}.csv")
+    except (OSError, ValueError):
+        return None
+    d = d[(d["opcao"] == ticker) & (d["ult"] > 0)]
+    if d.empty:
+        return None
+    inicio = quando.timestamp()
+    d = d[(d["ts"] >= inicio - 120) & (d["ts"] <= inicio + 3600)]
+    if d.empty:
+        return None
+    linha = d.iloc[0]
+    compra, venda = float(linha.get("compra") or 0), float(linha.get("venda") or 0)
+    preco = (compra + venda) / 2 if 0 < compra <= venda else float(linha["ult"])
+    return preco, datetime.fromtimestamp(float(linha["ts"]), BRT)
+
+
 def precos_opcao(ativo: str, est, op, preco: float, info: dict) -> dict:
     """Preço da opção sugerida agora e estimado nos níveis da operação (parcial, alvo, stop).
 
@@ -3507,35 +3521,52 @@ def precos_opcao(ativo: str, est, op, preco: float, info: dict) -> dict:
                 if cot.get("compra") and cot.get("venda") else f"último · ação {_num(preco, 2)}")
     else:
         agora, desc = valor(preco), f"ação {_num(preco, 2)}"
-    niveis = [("Agora", agora, desc)]
-    if not pd.isna(op.alvo1) and getattr(est, "parcial_no_profit", True) and not op.parcial_feita:
-        niveis.append(("Na parcial", valor(op.alvo1), f"ação {_num(op.alvo1, 2)}"))
-    niveis.append(("No alvo", valor(op.alvo2), f"ação {_num(op.alvo2, 2)}"))
-    niveis.append(("No zero a zero" if op.stop_movido else "No stop", valor(op.stop), f"ação {_num(op.stop, 2)}"))
-    tipico = DIAS_TIPICOS.get(ativo, 2)
-    hoje_v, amanha, depois = valor(preco), valor(preco, du - 1), valor(preco, du - tipico)
-    theta = (hoje_v - amanha, hoje_v - depois, tipico) if None not in (hoje_v, amanha, depois) else None
-    if fonte == "profit":
-        nota = (f"Cotação ao vivo do Profit ({cot.get('hora') or '—'}): último {_moeda(cot['ult'])}"
-                + (f", compra {_moeda(cot['compra'])}, venda {_moeda(cot['venda'])}"
-                   if cot.get("compra") and cot.get("venda") else "")
-                + ". Parcial, alvo e stop estimados por Black-Scholes com a volatilidade implícita desse preço.")
-    elif fonte == "b3":
-        nota = (f"Ainda sem cotação ao vivo da opção (com o Profit aberto, o coletor passa a assiná-la em "
-                f"até 10 s). Usando a B3, com ~15 min de atraso: último {_moeda(cot['ult'])} com a ação a "
-                f"{_moeda(cot['spot'])}. Valores estimados por Black-Scholes.")
+    # quanto a opção valia quando o sinal saiu: o gravado pelo coletor, se houver; senão, o
+    # Black-Scholes com a volatilidade de agora, a ação na entrada e o prazo daquele dia
+    gravado = _opcao_gravada(ticker, op.hora_sinal)
+    entrou = op.entrada.preco if op.entrada is not None else op.preco_sinal
+    du_sinal = dias_uteis(op.hora_sinal.date(), info["venc"])
+    if gravado:
+        no_sinal, sinal_fonte, sinal_hora = gravado[0], "gravado", gravado[1]
+    elif iv is not None and du_sinal >= 0:
+        no_sinal, sinal_fonte, sinal_hora = valor(entrou, du_sinal), "estimado", None
     else:
-        spot_site = info.get("spot_site")
-        quando_site = f" (com a ação a ~{_moeda(spot_site)}, dado atrasado)" if spot_site else ""
-        nota = (f"Último negócio no site: {_moeda(o.get('ultimo'))}{quando_site}. Preços estimados por "
-                f"Black-Scholes com a volatilidade implícita do site.")
-    nota += " Confira o book antes de mandar a ordem."
+        no_sinal, sinal_fonte, sinal_hora = None, None, None
+
+    def desde(v):
+        """Variação da opção do sinal até aqui, em %."""
+        if not no_sinal or not v:
+            return None
+        return _num((v / no_sinal - 1) * 100, 0, sufixo="%", sinal=True)
+
+    def nivel(rotulo, v, base):
+        variacao = desde(v)
+        return (rotulo, v, f"{variacao} · {base}" if variacao else base)
+
+    niveis = []
+    if no_sinal:
+        niveis.append(("No sinal", no_sinal, f"{op.hora_sinal:%d/%m %H:%M}"))
+    niveis.append(("Agora", agora, f"{desde(agora)} desde o sinal" if desde(agora) else desc))
+    if not pd.isna(op.alvo1) and getattr(est, "parcial_no_profit", True) and not op.parcial_feita:
+        niveis.append(nivel("Na parcial", valor(op.alvo1), f"ação {_num(op.alvo1, 2)}"))
+    niveis.append(nivel("No alvo", valor(op.alvo2), f"ação {_num(op.alvo2, 2)}"))
+    niveis.append(nivel("No zero a zero" if op.stop_movido else "No stop", valor(op.stop),
+                        f"ação {_num(op.stop, 2)}"))
+    if sinal_fonte == "gravado":
+        nota_sinal = (f"No sinal ({op.hora_sinal:%d/%m às %H:%M}) a opção valia {_moeda(no_sinal)} — primeira "
+                      f"cotação que o coletor gravou dela, às {sinal_hora:%H:%M}.")
+    elif sinal_fonte == "estimado":
+        nota_sinal = (f"No sinal ({op.hora_sinal:%d/%m às %H:%M}) a opção valia ~{_moeda(no_sinal)}: estimativa "
+                      f"por Black-Scholes com a ação a {_moeda(entrou)}, {du_sinal} DU até o vencimento e a "
+                      f"volatilidade de agora — o coletor ainda não gravava essa opção.")
+    else:
+        nota_sinal = ""
     partes = [f"agora {_moeda(agora)} ({FONTES_OPCAO[fonte]})"]
     partes += [f"{n.lower()} ~{_moeda(v)}" for n, v, _ in niveis[1:] if v is not None]
     resumo = (f"Comprar {tipo} {ticker} · strike {_moeda(k)} · vence {info['venc']:%d/%m} ({du} DU)\n"
               + " · ".join(partes))
     return {"ticker": ticker, "tipo": tipo, "strike": k, "iv": iv, "fonte": fonte, "cot": cot,
-            "niveis": niveis, "theta": theta, "nota": nota, "resumo": resumo}
+            "niveis": niveis, "nota_sinal": nota_sinal, "no_sinal": no_sinal, "resumo": resumo}
 
 
 def _bloco_opcao(ativo: str, est, op, preco: float, info: dict | None) -> str:
@@ -3551,25 +3582,21 @@ def _bloco_opcao(ativo: str, est, op, preco: float, info: dict | None) -> str:
     grade = "".join(f'<div><span>{r}</span><b>{_moeda(v) if v is not None else "—"}</b><em>{_esc(d)}</em></div>'
                     for r, v, d in p["niveis"])
     notas = []
-    if p["theta"]:
-        dia, periodo, tipico = p["theta"]
-        notas.append(f"Com a ação parada, perde ~{_moeda(dia)} por dia; em {tipico} "
-                     f"{'dia útil' if tipico == 1 else 'dias úteis'} (tempo típico das operações vencedoras), "
-                     f"~{_moeda(periodo)}.")
     if info.get("pulado"):
         notas.append(f"O vencimento curto ({info['pulado']:%d/%m}, {info['du_pulado']} DU) ficou de fora: "
                      f"a {ativo} costuma precisar de {DIAS_TIPICOS.get(ativo, 2)} DU e pede pelo menos "
                      f"{info['minimo']} DU até o vencimento.")
     if info.get("velha"):
         notas.append(f"O site não respondeu agora; grade das {info['velha'][0]:%H:%M}.")
-    notas.append(p["nota"])
+    if p["nota_sinal"]:
+        notas.append(p["nota_sinal"])
     lado_css = "call" if tipo == "CALL" else "put"
     vivo = ' · <b class="opx-vivo">ao vivo</b>' if p["fonte"] == "profit" else ""
     return (f'<div class="opx {lado_css}"><div class="opx-h"><span class="side"><i></i>Comprar {tipo.lower()}</span>'
             f'<b class="opx-tk">{_esc(o["ticker"])}</b></div>'
             f'<div class="opx-d">strike {_moeda(p["strike"])} · vence {info["venc"]:%d/%m} ({du} DU) · '
             f'Δ {_num(o["delta"], 2, sinal=True)} · vol. impl. {_num(p["iv"], 0, sufixo="%") if p["iv"] else "—"}{vivo}</div>'
-            f'<div class="opx-g" style="--n:{len(p["niveis"])}">{grade}</div>'
+            f'<div class="opx-g">{grade}</div>'
             + "".join(f'<p class="opx-n">{n}</p>' for n in notas) + "</div>")
 
 
@@ -3589,7 +3616,7 @@ def _cartao_operacao(ativo: str, est, res, formando, erro: str | None, opcao: di
     preco, dia = float(ultimo["close"]), ultimo.name.date()
     do_dia = [o for o in res.operacoes if o.hora_sinal.date() == dia]
     fechadas = [o for o in do_dia if not o.aberta]
-    no_dia = sum(o.resultado() for o in fechadas)
+    no_dia = sum(_pct_resultado(o) for o in fechadas)      # % somado das operações do pregão
     op = res.aberta
     if op is None:
         if do_dia:
@@ -3597,19 +3624,20 @@ def _cartao_operacao(ativo: str, est, res, formando, erro: str | None, opcao: di
             saida = u.execucoes[-1]
             texto = (f"Sem operação aberta. A última foi {'compra' if u.lado > 0 else 'venda'} com sinal às "
                      f"{u.hora_sinal:%H:%M}, encerrada por {saida.rotulo} às {saida.hora:%H:%M} "
-                     f"({_reais(u.resultado())}).")
+                     f"({_num(_pct_resultado(u), 2, sufixo='%', sinal=True)}).")
         else:
             texto = "Sem operação aberta e nenhum sinal neste pregão."
         return (f'<div class="card opc"><div class="opc-h">{cab}<span class="sts">sem posição</span></div>'
                 f'<p class="opc-vazio">{texto}</p><div class="opc-g">'
                 f'<div><span>Preço</span><b>{_moeda(preco)}</b><em>candle das {ultimo.name:%H:%M}</em></div>'
                 f'<div><span>Operações</span><b>{len(fechadas)}</b><em>fechadas no pregão</em></div>'
-                f'<div><span>Resultado</span><b>{_reais(no_dia)}</b><em>do pregão, lote {est.lote}</em></div>'
+                f'<div><span>Resultado</span><b>{_num(no_dia, 2, sufixo="%", sinal=True)}</b>'
+                f'<em>do pregão · {len(fechadas)} fechada(s)</em></div>'
                 f"</div></div>")
 
     ent = op.entrada
     resultado = op.resultado(preco)
-    pct = resultado / (ent.preco * est.lote) * 100
+    pct = _pct_resultado(op, preco)
     lado_txt, classe = ("Comprado", "compra") if op.lado > 0 else ("Vendido", "venda")
     icone = _ic("sobe") if op.lado > 0 else _ic("desce")
     parcial = next((e for e in op.execucoes if e.rotulo == "parcial"), None)
@@ -3651,15 +3679,16 @@ def _cartao_operacao(ativo: str, est, res, formando, erro: str | None, opcao: di
     else:
         stop_txt = f"risco de {_num(abs(op.stop - ent.preco) / ent.preco * 100, 2)}% · a mercado ao tocar"
     return (f'<div class="card opc"><div class="opc-h">{cab}<span class="sts {classe}">{icone}{lado_txt}</span></div>'
-            f'<div class="opc-res"><div class="v {tom}">{_reais(resultado)}</div>'
-            f'<div class="d">{_num(pct, 2, sufixo="%", sinal=True)} sobre a entrada · {_num(abs(op.qtd), 0)} de '
+            f'<div class="opc-res"><div class="v {tom}">{_num(pct, 2, sufixo="%", sinal=True)}</div>'
+            f'<div class="d">sobre a entrada de {_moeda(ent.preco)} · {_num(abs(op.qtd), 0)} de '
             f"{est.lote} ações abertas</div></div>{regua}"
             f'<div class="opc-g">'
             f'<div><span>Entrada</span><b>{_moeda(ent.preco)}</b><em>{_quando(ent.hora, dia)} · sinal {_quando(op.hora_sinal, dia)}</em></div>'
             f'<div><span>Preço atual</span><b>{_moeda(preco)}</b><em>candle das {ultimo.name:%H:%M}</em></div>'
             f'{meio}'
             f'<div><span>Stop</span><b>{_moeda(op.stop)}</b><em>{stop_txt}</em></div>'
-            f'<div><span>No pregão</span><b>{_reais(no_dia)}</b><em>{len(fechadas)} fechada(s)</em></div>'
+            f'<div><span>No pregão</span><b>{_num(no_dia, 2, sufixo="%", sinal=True)}</b>'
+            f'<em>{len(fechadas)} fechada(s)</em></div>'
             f"</div>{_bloco_opcao(ativo, est, op, preco, opcao)}</div>")
 
 
@@ -3837,15 +3866,15 @@ MESES_CURTOS = ("jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "
 
 
 @cache_dados(ttl=3600, show_spinner=False)
-def _resultados_salvos(_mtime: float) -> dict:
+def _resultados_salvos(mtime: float) -> dict:
     return json.loads(ARQ_RESULTADOS.read_text(encoding="utf-8"))
 
 
-def _mil(v: float) -> str:
-    """+1.312 / −845: reais inteiros com sinal, para caber na célula."""
-    if v is None or pd.isna(v) or abs(v) < 0.5:
+def _pct_celula(v: float) -> str:
+    """+2,3% / −1,4% — percentual curto, para caber na célula do calendário."""
+    if v is None or pd.isna(v) or abs(v) < 0.005:
         return "0"
-    return ("+" if v > 0 else "−") + f"{abs(v):,.0f}".replace(",", ".")
+    return _num(v, 1, sufixo="%", sinal=True)
 
 
 def _cor_resultado(v: float, escala: float) -> str:
@@ -3857,83 +3886,89 @@ def _cor_resultado(v: float, escala: float) -> str:
 
 def _secao_resultados() -> None:
     """Resultado mês a mês das estratégias recomendadas, como se tivessem sido operadas
-    (resultados.py: backtest com os candles do Profit desde 2022, refeito todo dia)."""
+    (resultados.py: backtest com os candles do Profit desde 2022, refeito todo dia).
+
+    Em % sobre o valor da entrada de cada operação, somando as do mês — o R$ fica na dica do
+    mouse. Percentual não muda de escala quando o lote muda, e é como ele acompanha."""
     if not ARQ_RESULTADOS.exists():
         return       # na nuvem não há candles do Profit; no PC aparece depois do primeiro cálculo
     try:
         dados = _resultados_salvos(ARQ_RESULTADOS.stat().st_mtime)
     except Exception:
         return
+    if not dados.get("meses") or "total_pct" not in dados["meses"][0]:
+        return       # arquivo de antes do resultado em %; o vigia refaz a conta depois das 18:40
     ativos = dados["ativos"]
-    _html(f'<div class="dx"><div class="sec"><div class="t">Resultado mês a mês</div>'
-          f'<div class="d">Como se as {len(ativos)} estratégias recomendadas tivessem sido operadas desde 2022 · '
-          f'backtest com os candles do Profit, {dados["lote"]} ações por operação, sem custos</div></div></div>')
+    _html('<div class="dx"><div class="sec"><div class="t">Resultado mês a mês</div></div></div>')
     escolha = st.segmented_control("Estratégia", ["Carteira"] + ativos, key="res_ativo", required=True,
                                    default="Carteira", label_visibility="collapsed") or "Carteira"
-    meses = pd.DataFrame([{"mes": pd.Period(m["mes"], "M"), "ops": m["ops"], "total": m["total"],
-                           **m["por_ativo"], **{f"n_{a}": n for a, n in (m.get("ops_por_ativo") or {}).items()}}
+    meses = pd.DataFrame([{"mes": pd.Period(m["mes"], "M"), "ops": m["ops"], "total": m["total_pct"],
+                           "reais": m["total"], **m["por_ativo_pct"],
+                           **{f"r_{a}": v for a, v in m["por_ativo"].items()},
+                           **{f"n_{a}": n for a, n in (m.get("ops_por_ativo") or {}).items()}}
                           for m in dados["meses"]]).set_index("mes")
     carteira = escolha == "Carteira"
     serie = meses["total"] if carteira else meses[escolha]
-    n_ops = meses["ops"] if carteira else meses.get(f"n_{escolha}", pd.Series(0, index=meses.index))
+    reais = meses["reais"] if carteira else meses[f"r_{escolha}"]
+    n_ops = (meses["ops"] if carteira else meses.get(f"n_{escolha}", pd.Series(0, index=meses.index)))
     n_ops = n_ops.fillna(0).astype(int)
     atual = meses.index[-1]
     fechados = serie.iloc[:-1] if len(serie) > 1 else serie
-    ult12 = float(serie.iloc[-12:].sum())
-    positivos = int((fechados > 0.5).sum())
+    ult12, reais12 = float(serie.iloc[-12:].sum()), float(reais.iloc[-12:].sum())
+    positivos = int((fechados > 0.005).sum())
     pior = fechados.idxmin()
 
     def tom(v):
-        return "up" if v > 0.5 else ("down" if v < -0.5 else "")
+        return "up" if v > 0.005 else ("down" if v < -0.005 else "")
+
+    def pc(v):
+        return _num(v, 2, sufixo="%", sinal=True)
 
     def nome_mes(per):
         return f"{MESES_CURTOS[per.month - 1]}/{per.year}"
 
     tiles = (f'<div class="res-g">'
-             f'<div><span>{nome_mes(atual)} até agora</span><b class="{tom(serie.iloc[-1])}">{_reais(serie.iloc[-1])}</b>'
-             f'<em>{n_ops.iloc[-1]} operações no mês</em></div>'
-             f'<div><span>Últimos 12 meses</span><b class="{tom(ult12)}">{_reais(ult12)}</b><em>com o mês atual</em></div>'
-             f'<div><span>Desde 2022</span><b class="{tom(serie.sum())}">{_reais(serie.sum())}</b>'
-             f'<em>{int(n_ops.sum())} operações</em></div>'
+             f'<div><span>{nome_mes(atual)} até agora</span><b class="{tom(serie.iloc[-1])}">{pc(serie.iloc[-1])}</b>'
+             f'<em>{n_ops.iloc[-1]} operações · {_reais(reais.iloc[-1])}</em></div>'
+             f'<div><span>Últimos 12 meses</span><b class="{tom(ult12)}">{pc(ult12)}</b>'
+             f'<em>com o mês atual · {_reais(reais12)}</em></div>'
+             f'<div><span>Desde 2022</span><b class="{tom(serie.sum())}">{pc(serie.sum())}</b>'
+             f'<em>{int(n_ops.sum())} operações · {_reais(reais.sum())}</em></div>'
              f'<div><span>Meses no positivo</span><b>{positivos} de {len(fechados)}</b>'
              f'<em>{positivos / max(1, len(fechados)) * 100:.0f}% dos meses fechados</em></div>'
-             f'<div><span>Pior mês</span><b class="{tom(fechados.min())}">{_reais(fechados.min())}</b>'
+             f'<div><span>Pior mês</span><b class="{tom(fechados.min())}">{pc(fechados.min())}</b>'
              f'<em>{nome_mes(pior)}</em></div></div>')
     escala = float(np.nanpercentile(np.abs(fechados.to_numpy()), 90)) or 1.0
     th = "".join(f"<th>{m}</th>" for m in MESES_CURTOS) + "<th>Ano</th>"
     linhas = []
     for ano in sorted({per.year for per in serie.index}, reverse=True):
-        cels = []
+        cels, do_ano = [], [per for per in serie.index if per.year == ano]
         for mes in range(1, 13):
             per = pd.Period(year=ano, month=mes, freq="M")
             if per not in serie.index:
                 cels.append('<td class="c na"></td>')
                 continue
             v = float(serie[per])
-            dica = f"{nome_mes(per)}: {_reais(v)} em {n_ops[per]} operações" + (" (mês em andamento)" if per == atual else "")
+            dica = (f"{nome_mes(per)}: {pc(v)} ({_reais(reais[per])}) em {n_ops[per]} operações"
+                    + (" · mês em andamento" if per == atual else ""))
             cels.append(f'<td class="c{" mes-at" if per == atual else ""}" title="{_escape(dica)}"'
-                        f'{_cor_resultado(v, escala)}>{_mil(v)}</td>')
-        do_ano = float(serie[[per for per in serie.index if per.year == ano]].sum())
-        cels.append(f'<td class="c ano"{_cor_resultado(do_ano, escala * 4)}>{_mil(do_ano)}</td>')
+                        f'{_cor_resultado(v, escala)}>{_pct_celula(v)}</td>')
+        soma, soma_r = float(serie[do_ano].sum()), float(reais[do_ano].sum())
+        cels.append(f'<td class="c ano" title="{_escape(f"{ano}: {pc(soma)} ({_reais(soma_r)})")}"'
+                    f'{_cor_resultado(soma, escala * 4)}>{_pct_celula(soma)}</td>')
         linhas.append(f'<tr><td class="ak">{ano}</td>{"".join(cels)}</tr>')
     gerado = datetime.fromisoformat(dados["gerado"])
-    ate = datetime.fromisoformat(dados["ate"])
-    nota = (f"Resultado em <b>ações</b> ({dados['lote']} por operação), sem corretagem, emolumentos e slippage; "
-            f"com os candles do Profit, este motor fica de 2% a 19% abaixo do backtest do próprio Profit. Operando "
-            f"a opção (call na compra, put na venda), o ganho acompanha o delta (0,50 a 0,70) e a opção perde valor "
-            f"com o tempo — o resultado em opções é outro. Candles até {ate:%d/%m %H:%M}; o vigia refaz a conta "
-            f"todo dia depois das 18:40 (ou rode python resultados.py).")
     titulo = "Carteira · " + ", ".join(ativos) if carteira else f"{escolha} · {ope.ESTRATEGIAS[escolha].nome}"
     _html(f'<div class="dx"><div class="card"><div class="card-h"><div class="t">{_ic("grade")}{_esc(titulo)}</div>'
-          f'<div class="d">R$ por mês · atualizado {gerado:%d/%m %H:%M}</div></div>{tiles}'
+          f'<div class="d">% por mês · atualizado {gerado:%d/%m %H:%M}</div></div>{tiles}'
           f'<div class="hm-wrap"><table class="hm"><thead><tr><th></th>{th}</tr></thead>'
-          f'<tbody>{"".join(linhas)}</tbody></table></div>'
-          f'<div class="note">{_ic("info")}<span>{nota}</span></div></div></div>')
+          f'<tbody>{"".join(linhas)}</tbody></table></div></div></div>')
     cab = "".join(f"<th>{a}</th>" for a in ativos) + "<th>Total</th><th>Operações</th>"
     corpo = "".join(
         f'<tr><td class="mut">{nome_mes(per)}</td>'
-        + "".join(f'<td class="{tom(linha[a])}">{_mil(linha[a])}</td>' for a in ativos)
-        + f'<td class="{tom(linha["total"])}"><b>{_mil(linha["total"])}</b></td><td class="mut">{int(linha["ops"])}</td></tr>'
+        + "".join(f'<td class="{tom(linha[a])}">{_pct_celula(linha[a])}</td>' for a in ativos)
+        + f'<td class="{tom(linha["total"])}" title="{_escape(_reais(linha["reais"]))}">'
+        f'<b>{_pct_celula(linha["total"])}</b></td><td class="mut">{int(linha["ops"])}</td></tr>'
         for per, linha in meses.iloc[::-1].iterrows())
     with st.expander("Ver mês a mês por estratégia", icon=":material/table_rows:"):
         _html(f'<div class="dx"><div class="tbl-wrap"><table class="rk"><thead><tr><th>Mês</th>{cab}</tr></thead>'
@@ -3984,7 +4019,6 @@ def pagina_operacoes(cabecalho) -> None:
         _testar_avisos()
     st.fragment(_painel_operacoes, run_every=ritmo if auto else None)()
     _secao_resultados()
-    _rodape("Sinais recalculados a partir do código das estratégias do Profit — confira no Profit antes de agir.")
 
 
 def _painel_operacoes() -> None:

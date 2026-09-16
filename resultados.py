@@ -99,7 +99,7 @@ def operacoes_de(ativo: str) -> tuple[pd.DataFrame, pd.Timestamp]:
     d = ajustado(ativo, candles(ativo, est.minutos))
     res = ope.simular(est, d[["open", "high", "low", "close", "volume"]])
     linhas = [{"ativo": ativo, "entrada": o.entrada.hora, "saida": o.execucoes[-1].hora, "lado": o.lado,
-               "resultado": o.resultado()}
+               "resultado": o.resultado(), "capital": abs(o.entrada.preco * o.entrada.qtd)}
               for o in res.operacoes if not o.aberta and o.entrada.hora >= INICIO]
     return pd.DataFrame(linhas), d.index[-1]
 
@@ -117,14 +117,20 @@ def calcular(ativos=ATIVOS) -> dict:
         raise RuntimeError("; ".join(f"{a}: {m}" for a, m in falhas.items()))
     ops = pd.concat(partes, ignore_index=True)
     mes = ops["saida"].dt.tz_localize(None).dt.to_period("M")
+    # em % sobre o valor da entrada: é como ele acompanha, e não muda de escala com o lote
+    ops["pct"] = ops["resultado"] / ops["capital"] * 100
     tabela = ops.pivot_table(index=mes, columns="ativo", values="resultado", aggfunc="sum")
+    percentual = ops.pivot_table(index=mes, columns="ativo", values="pct", aggfunc="sum")
     contagem = ops.pivot_table(index=mes, columns="ativo", values="resultado", aggfunc="size")
     todos = pd.period_range(INICIO.tz_localize(None), max(ultimos.values()).tz_localize(None), freq="M")
     colunas = [a for a in ativos if a in ultimos]
     tabela = tabela.reindex(index=todos, columns=colunas).fillna(0.0)
+    percentual = percentual.reindex(index=todos, columns=colunas).fillna(0.0)
     contagem = contagem.reindex(index=todos, columns=colunas).fillna(0).astype(int)
     meses = [{"mes": str(m), "por_ativo": {a: round(float(v), 2) for a, v in linha.items()},
               "total": round(float(linha.sum()), 2), "ops": int(contagem.loc[m].sum()),
+              "por_ativo_pct": {a: round(float(v), 3) for a, v in percentual.loc[m].items()},
+              "total_pct": round(float(percentual.loc[m].sum()), 3),
               "ops_por_ativo": {a: int(v) for a, v in contagem.loc[m].items()}}
              for m, linha in tabela.iterrows()]
     dados = {"gerado": datetime.now(ope.BRT).isoformat(timespec="seconds"),
@@ -152,7 +158,8 @@ def precisa_atualizar(agora: datetime | None = None) -> bool:
 
 if __name__ == "__main__":
     d = calcular()
-    t = pd.DataFrame([{"mês": m["mes"], **m["por_ativo"], "total": m["total"], "ops": m["ops"]} for m in d["meses"]])
+    t = pd.DataFrame([{"mês": m["mes"], **m["por_ativo_pct"], "total %": m["total_pct"],
+                       "total R$": m["total"], "ops": m["ops"]} for m in d["meses"]])
     pd.set_option("display.width", 200)
     print(t.round(0).to_string(index=False))
     print(f"\ncandles até {d['ate']}; gravado em {ARQ}" + (f"; falhas: {d['falhas']}" if d["falhas"] else ""))

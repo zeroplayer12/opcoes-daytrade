@@ -446,6 +446,24 @@ gráfico de candles do pregão com as linhas da operação. Abre direto em
   bruto, ajustado aqui por desdobramentos e proventos), 200 ações, sem custos. O vigia refaz a
   conta todo dia depois das 18:40 (~30 s); à mão, `python resultados.py`. É resultado em ações:
   com a opção, o ganho acompanha o delta e a opção perde valor com o tempo.
+- **Tudo em % (16/09/2026):** a pedido dele, a aba não mostra mais resultado em R$. Cada operação
+  conta em **% sobre o valor da entrada** (preço de entrada × quantidade): é o número do cartão, o
+  "no pregão" é a soma das fechadas do dia e o mês a mês é a soma das operações do mês (o R$ ficou
+  na dica do mouse das células). Percentual não muda de escala quando o lote muda. O aviso de saída
+  (Windows/Telegram) também vai em %.
+- **A opção desde o sinal (16/09/2026):** o bloco da opção abre com **No sinal** — dia, hora e quanto
+  ela valia quando a estratégia deu o sinal — e os outros valores mostram a variação a partir dali:
+  agora, na parcial, no alvo e no stop. O preço no sinal sai do que o coletor gravou (ele assina a
+  opção assim que o sinal aparece, então a primeira linha dela é de minutos depois); sem isso, é
+  Black-Scholes com a ação no preço da entrada, o prazo daquele dia e a volatilidade de agora — e o
+  cartão diz qual dos dois é.
+- **Menos texto (16/09/2026):** saíram os rodapés das três abas, a nota do Delta calculado (aba
+  Opções), a nota de quanto a opção perde por dia, a nota da fonte da cotação e as duas explicações
+  do resultado mês a mês. Ele lê o painel todo dia e já sabe o que cada número é.
+- **Cuidado com `st.cache_data`:** parâmetro que começa com `_` fica **fora da chave** do cache. O
+  `_resultados_salvos(_mtime)` recebia a data do arquivo justamente para renovar a leitura e, com o
+  underscore, devolvia para sempre o primeiro resultado — a seção do mês a mês sumiu da página até
+  o parâmetro virar `mtime` (16/09/2026).
 - **Exige no Profit:** *Exportação em Tempo Real (RTD / DDE)* com o RTD ativado e os 6
   ativos na lista. Com o RTD desligado, o servidor quebra ao receber o pedido.
 - **Sem o coletor** (ou no Streamlit Cloud), o pregão de hoje vem do Yahoo, com cerca de

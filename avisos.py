@@ -62,6 +62,10 @@ def _rs(v: float) -> str:
     return ("+" if v > 0.004 else "−" if v < -0.004 else "") + _r(abs(v))
 
 
+def _pc(v: float) -> str:
+    return ("+" if v > 0.004 else "−" if v < -0.004 else "") + f"{abs(v):.2f}".replace(".", ",") + "%"
+
+
 def eventos(ativo: str, est, res, agora: datetime, dias: int = 5) -> list[dict]:
     """Um item por acontecimento das operações dos últimos `dias`, cada um com uma chave
     estável — quem avisa guarda as chaves já avisadas e manda só as novas.
@@ -103,8 +107,10 @@ def eventos(ativo: str, est, res, agora: datetime, dias: int = 5) -> list[dict]:
             s = op.execucoes[-1]
             como = {"alvo": "no alvo", "zeragem": "na zeragem"}.get(
                 s.rotulo, "no zero a zero" if op.stop_movido else "no stop")
+            base = abs(ent.preco * ent.qtd) if ent is not None and ent.preco and ent.qtd else 0.0
+            quanto = _pc(op.resultado() / base * 100) if base else _rs(op.resultado())
             ev(op, "saida", "saida", s.hora, f"{ativo} · saída {como}",
-               f"Saiu a {_r(s.preco)} ({s.hora:%H:%M}) · resultado {_rs(op.resultado())} com {est.lote} ações")
+               f"Saiu a {_r(s.preco)} ({s.hora:%H:%M}) · resultado {quanto} sobre a entrada")
     return lista
 
 
