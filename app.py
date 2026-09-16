@@ -3219,8 +3219,9 @@ def cotacao_ao_vivo(ticker: str) -> dict | None:
         return None
     if not d or not d.get("ult") or d["ult"] <= 0 or d.get("dat") != f"{datetime.now(BRT):%d/%m/%Y}":
         return None
-    if time.time() - float(d.get("ts") or 0) > 600:
-        return None       # coletor parado: a cotação continua sendo a última, mas não é "ao vivo"
+    agora = datetime.now(BRT)
+    if time.time() - float(d.get("ts") or 0) > 600 or not ("10:00" <= f"{agora:%H:%M}" <= "18:30"):
+        return None       # fora do pregão, ou coletor parado: é a última cotação, não uma ao vivo
     return {"fonte": "profit", "ult": d["ult"], "compra": d.get("compra"), "venda": d.get("venda"),
             "hora": d.get("hor")}
 
@@ -3963,7 +3964,8 @@ def pagina_operacoes(cabecalho) -> None:
                  f'candles que o Profit guarda no disco."><span class="dot off"></span><b>Profit</b> · '
                  f'sem cotação desde {hora}</span>')
     elif estado == "encerrado":
-        fonte = f'<span class="pill"><span class="dot off"></span><b>Profit</b> · pregão encerrado ({hora})</span>'
+        fonte = ('<span class="pill" title="Hora do último negócio que o coletor gravou hoje."><span '
+                 f'class="dot off"></span><b>Profit</b> · encerrado · última cotação {hora}</span>')
     else:
         fonte = f'<span class="pill">{_ic("fonte")}<b>Yahoo Finance</b> · atraso de ~15 min</span>'
     ritmo = 60          # segundos; a pedido, 1 minuto (antes 5 s com o Profit ao vivo)
