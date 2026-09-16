@@ -241,6 +241,16 @@ os mesmos que aparecem no cartão do ativo. Dividir pelo desvio-padrão impede q
 comum, pese mais que o S&P, que anda 1%. Abaixo de 0,5 em módulo, fica "sem direção
 clara". É um resumo do que a tabela já mostra, não um sinal de entrada.
 
+### Ajustes a pedido dele (15/09/2026)
+
+O cartão da VALE3 traz o **minério de ferro sempre na primeira linha** (`FIXOS_NO_CARTAO`),
+mesmo quando a correlação é fraca: é o preço do produto dela, e ele quer ver o número todo dia.
+Nos últimos 60 pregões a relação medida é de apenas +0,17 — a Rio Tinto (+0,60) anda bem mais
+junto. Na janela "Pregão de hoje" o minério não aparece: o SGX não negocia no horário da B3.
+
+Saíram da aba o quadro que explicava "anda junto / anda contra / pressão" e o rodapé com o
+aviso de uso próprio e a nota do Yahoo — a leitura em palavras já está em cada cartão.
+
 ## Design
 
 **Liquid glass** sobre uma base escura e densa (skill *ui-ux-pro-max*), com Inter na
@@ -329,6 +339,9 @@ gráfico de candles do pregão com as linhas da operação. Abre direto em
   seguinte ao toque; o teste do toque vem antes de a parcial ou o breakeven moverem o stop.
   O código novo das duas foi entregue para atualizar no Profit. As listas de operações
   antigas se conferem com `stop_mercado=False`.
+- **BBAS3 fora das abas Opções e Operações (15/09/2026):** a estratégia dela saiu da carteira
+  recomendada, então ela não vira mais cartão nem opção sugerida (`ATIVOS_OPERADOS`). Continua
+  na aba Correlações, onde serve de contexto do pregão, e o código dela segue em `operacoes.py`.
 - **A opção do sinal no cartão (15/09/2026):** ele opera comprando a call no sinal de compra e a put
   no de venda. Cada posição aberta mostra a opção que as regras da aba Opções escolheriam (|Δ| 0,50–0,70,
   série mensal padrão, 2 a 20 DU mais o seguinte, a mais líquida), o preço estimado dela agora, na
@@ -375,8 +388,11 @@ gráfico de candles do pregão com as linhas da operação. Abre direto em
   (um teste, um segundo coletor) toma a conexão, e o primeiro para de receber sem aviso nenhum
   (visto em 15/09/2026) — qualquer leitura nova do RTD tem de entrar no próprio coletor.
 - **Quando o Profit para de mandar cotação (15/09/2026):** aconteceu duas vezes no mesmo
-  pregão — das 13:04 às 15:05 e das 16:08 em diante — com o profitchart.exe de pé. O que o
-  painel faz agora:
+  pregão — das 13:04 às 15:05 e das 16:08 em diante — com o profitchart.exe de pé. **A causa
+  é a licença do Profit: um login por vez.** Ele abriu o Profit no celular para acompanhar as
+  operações fora do escritório, e o acesso no PC caiu junto com o RTD, sem fechar o programa.
+  Quando ele volta a logar no PC, o Profit baixa o pregão inteiro de novo, então o cache de
+  candles fica completo e o painel se acerta sozinho. O que o painel faz enquanto isso:
   - o coletor **não grava o preço parado**. A cada conexão ele registra o estado dos ativos;
     se o último negócio (HOR) é mais de 5 min mais velho que o relógio, a linha é só uma cópia
     do preço de antes e fica de fora. Sem isso, cada reconexão vira um candle achatado — na

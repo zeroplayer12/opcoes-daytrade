@@ -60,6 +60,9 @@ except ImportError:  # pragma: no cover
 # =============================================================================
 
 ATIVOS: list[str] = ["BOVA11", "PETR4", "VALE3", "BBAS3", "ITUB4", "BPAC11"]
+# a BBAS3 saiu da carteira recomendada (15/09/2026) e não vira mais cartão nas abas Opções e
+# Operações; nas correlações ela continua, que ali serve de contexto do pregão
+ATIVOS_OPERADOS: list[str] = [a for a in ATIVOS if a != "BBAS3"]
 
 DELTA_MIN_PADRAO, DELTA_MAX_PADRAO = 0.50, 0.70   # regra obrigatória
 DU_MIN_PADRAO, DU_MAX_PADRAO = 2, 20              # janela de dias úteis
@@ -2767,6 +2770,11 @@ def _efeito(r: float, c: dict | None) -> str:
     return f'<span class="efe down">{_ic("desce")}puxa para baixo</span>'
 
 
+# mercado que entra no cartão do ativo mesmo sem estar entre os mais fortes, porque é o que
+# manda no papel — o minério é o preço do produto da VALE3
+FIXOS_NO_CARTAO: dict[str, str] = {"VALE3": "SGX:FEF"}
+
+
 def _cartoes_ativos(corr: pd.DataFrame, cot: dict, sigmas: dict, janela, dia: date | None) -> str:
     """Um cartão por ativo: os mercados que mais andam com ele, o que fazem agora e a pressão.
 
@@ -2784,6 +2792,11 @@ def _cartoes_ativos(corr: pd.DataFrame, cot: dict, sigmas: dict, janela, dia: da
         ordem = serie.reindex(serie.abs().sort_values(ascending=False).index)
         relevantes = ordem[ordem.abs() >= 0.3].head(3)
         mostrados = relevantes if len(relevantes) else ordem.head(2)
+        fixo = FIXOS_NO_CARTAO.get(ativo)
+        if fixo and fixo in ordem.index:
+            # na frente e sempre presente; na janela "hoje" ele não negocia no horário da B3 e
+            # simplesmente não aparece
+            mostrados = pd.concat([ordem[[fixo]], mostrados.drop(index=fixo, errors="ignore")]).head(3)
         linhas = []
         for sym, r in mostrados.items():
             c = cot.get(sym)
@@ -2805,13 +2818,8 @@ def _cartoes_ativos(corr: pd.DataFrame, cot: dict, sigmas: dict, janela, dia: da
                   else (f"no pregão de {dia:%d/%m}" if dia else "no último pregão")) + ", em barras de 5 min"
     else:
         quando = f"nos últimos {janela} pregões"
-    guia = (f'<div class="guia">{_ic("info")}<span><b>Anda junto</b>: quando o mercado sobe, o ativo costuma '
-            "subir; <b>anda contra</b>: o contrário. <b>Força</b>: fraca abaixo de 0,3, moderada até 0,6, "
-            "forte acima disso. <b>Puxa para cima ou para baixo</b> junta essa relação com o que o mercado faz "
-            "agora, e a <b>pressão</b> soma os mercados de relação moderada ou forte, pesando cada um pelo "
-            "tamanho normal do movimento dele. É contexto para o pregão, não sinal de entrada.</span></div>")
     return (f'<div class="sec"><div class="t">Seus ativos hoje</div><div class="d">relação medida {quando} · '
-            f'movimentos desde o fechamento anterior</div></div>{guia}<div class="ativos">{"".join(cartoes)}</div>')
+            f'movimentos desde o fechamento anterior</div></div><div class="ativos">{"".join(cartoes)}</div>')
 
 
 def _cartao_aviso(icone: str, titulo: str, texto: str) -> str:
@@ -2935,8 +2943,9 @@ def pagina_opcoes(cabecalho, hoje: date) -> None:
     # ---------------- Controles da aba ---------------------------------------
     c_ativo, c_venc, c_acao = st.columns([5, 5, 1.3], vertical_alignment="bottom")
     with c_ativo:
-        ativo = st.segmented_control("Ativo", ATIVOS, key="ativo_sel", required=True)
+        ativo = st.segmented_control("Ativo", ATIVOS_OPERADOS, key="ativo_sel", required=True)
         ativo = ativo or st.session_state.get("ativo_ult", "PETR4")
+        ativo = ativo if ativo in ATIVOS_OPERADOS else "PETR4"
         st.session_state["ativo_ult"] = ativo
     with c_acao:
         atualizar = st.button("Atualizar", icon=":material/refresh:", key="atualizar_op", **_LARGURA)
@@ -3083,8 +3092,6 @@ def pagina_correlacoes(cabecalho) -> None:
                    f'<span class="pill">{_ic("fonte")}<b>Yahoo Finance</b></span>'
                    f'<span class="pill">{_ic("relogio")}{ritmo}</span>'), cabecalho)
     st.fragment(_painel_mercados, run_every=60 if auto else None)()
-    _rodape("Cotações do Yahoo Finance, com atraso que varia por bolsa — confirme no home broker "
-            "antes de operar.")
 
 
 def _painel_mercados() -> None:
@@ -3981,10 +3988,13 @@ def pagina_operacoes(cabecalho) -> None:
 
 
 def _painel_operacoes() -> None:
-    """Cartões dos seis ativos e o gráfico do ativo escolhido; roda como fragmento."""
+    """Cartões dos ativos operados e o gráfico do ativo escolhido; roda como fragmento."""
     _garante_servicos()
     resultados, erros = {}, {}
-    for ativo, est in ope.ESTRATEGIAS.items():
+    for ativo in ATIVOS_OPERADOS:
+        est = ope.ESTRATEGIAS.get(ativo)
+        if est is None:
+            continue
         try:
             resultados[ativo] = ope.situacao(est, barras_estrategia(ativo))
         except Exception as exc:
@@ -3994,14 +4004,14 @@ def _painel_operacoes() -> None:
     faixa = _avisos_navegador(resultados)
     cartoes = "".join(
         _cartao_operacao(a, ope.ESTRATEGIAS[a], *(resultados.get(a) or (None, None)), erros.get(a), opcoes.get(a))
-        for a in ATIVOS if a in ope.ESTRATEGIAS)
-    faltam = [a for a in ATIVOS if a not in ope.ESTRATEGIAS]
+        for a in ATIVOS_OPERADOS if a in ope.ESTRATEGIAS)
+    faltam = [a for a in ATIVOS_OPERADOS if a not in ope.ESTRATEGIAS]
     if faltam:
         cartoes += _cartao_pendentes(faltam)
     _html(f'<div class="dx">{faixa}<div class="ops">{cartoes}</div></div>')
     if not resultados:
         return
-    disponiveis = [a for a in ATIVOS if a in resultados]
+    disponiveis = [a for a in ATIVOS_OPERADOS if a in resultados]
     if st.session_state.get("grafico_ativo") not in disponiveis:
         st.session_state["grafico_ativo"] = disponiveis[0]
     ativo = st.segmented_control("Gráfico", disponiveis, key="grafico_ativo", required=True) or disponiveis[0]
