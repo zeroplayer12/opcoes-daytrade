@@ -131,7 +131,7 @@ def windows(titulo: str, texto: str) -> None:
     O modo Não perturbe / Assistente de foco do Windows pode segurar a notificação."""
     xml = (f'<toast duration="long" scenario="reminder"><visual><binding template="ToastGeneric">'
            f"<text>{xml_escape(titulo)}</text><text>{xml_escape(texto)}</text></binding></visual>"
-           f'<actions><action content="OK" arguments="ok" activationType="system"/></actions>'
+           f'<actions><action content="OK" arguments="dismiss" activationType="system"/></actions>'
            f'<audio src="ms-winsoundevent:Notification.Reminder"/></toast>')
     ps = ("[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null;"
           "[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] > $null;"

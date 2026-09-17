@@ -32,6 +32,7 @@ import ctypes
 import io
 import json
 import math
+import os
 import re
 import subprocess
 import sys
@@ -3398,6 +3399,7 @@ def _garante_servicos() -> None:
             continue
         try:
             subprocess.Popen([sys.executable, arquivo], cwd=str(Path(__file__).resolve().parent),
+                             env={**os.environ, "PYTHONIOENCODING": "utf-8"},
                              creationflags=0x00000008 | 0x08000000,   # DETACHED_PROCESS | CREATE_NO_WINDOW
                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except OSError:

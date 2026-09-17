@@ -30,6 +30,14 @@ from datetime import datetime, timedelta
 
 import avisos
 
+# Sem janela (iniciado pelo painel), a saída padrão fica na codificação do Windows, que não tem o
+# "−" dos resultados negativos: o print quebrava e derrubava o que vinha depois dele.
+for _fluxo in (sys.stdout, sys.stderr):
+    try:
+        _fluxo.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError, OSError):
+        pass
+
 RAIZ = avisos.RAIZ
 LOG = RAIZ / "vigia.log"
 CICLO = 15                           # segundos entre verificações no pregão
@@ -39,7 +47,10 @@ TAXA = 0.1075                        # juro para o Black-Scholes, o mesmo padrã
 
 def log(msg: str) -> None:
     linha = f"{datetime.now():%d/%m %H:%M:%S} {msg}"
-    print(linha, flush=True)
+    try:
+        print(linha, flush=True)
+    except Exception:
+        pass                   # console ausente ou sem a codificação: o arquivo de log basta
     try:
         if LOG.exists() and LOG.stat().st_size > 2_000_000:
             LOG.replace(LOG.with_suffix(".old.log"))
@@ -157,9 +168,12 @@ class Vigia:
                 continue
             texto = ev["texto"] + self._opcao(ev, est, res, preco, agora)
             if enviar:
+                # anota e grava ANTES de mandar: se algo falhar depois do envio, o próximo ciclo não
+                # repete o aviso (em 17/09/2026 um erro no log fez a saída da BOVA11 sair a cada 20 s)
+                self.estado["vistos"][ev["chave"]] = hoje
+                self._salva()
                 canais = avisos.enviar(ev["titulo"], texto, self.cfg)
                 log(f"aviso: {ev['titulo']} — {texto.replace(chr(10), ' / ')} {canais}")
-                self.estado["vistos"][ev["chave"]] = hoje
             feitos.append({"titulo": ev["titulo"], "texto": texto})
         if enviar:
             self.primeiro = False

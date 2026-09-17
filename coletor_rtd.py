@@ -50,6 +50,13 @@ CAMPOS = ["ULT", "QTT", "VOL", "NEG", "HOR"]
 COLUNAS = ["ts", "hora", "ativo", "ult", "qtt", "vol", "neg", "hor"]
 TYPELIB = ("{EFCFBDCA-78A5-450B-8228-346C4F44D5B8}", 1, 0)   # RTDTrading, dentro do profitchart.exe
 BRT = timezone(timedelta(hours=-3), "BRT")
+# Sem janela (iniciado pelo painel), a saída padrão fica na codificação do Windows, que não tem o
+# "−" dos resultados negativos: o print quebrava e derrubava o que vinha depois dele.
+for _fluxo in (sys.stdout, sys.stderr):
+    try:
+        _fluxo.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError, OSError):
+        pass
 PASTA_OPC = PASTA / "opcoes"
 ASSINAR = PASTA_OPC / "assinar.json"         # {"PETRJ500": "2026-09-15", ...} — escrito pelo painel/vigia
 AGORA = PASTA_OPC / "agora.json"             # última cotação de cada opção assinada
@@ -61,7 +68,10 @@ SILENCIO_TETO = 1800                         # ... dobrando a espera até aqui, 
 
 def log(msg: str) -> None:
     linha = f"{datetime.now(BRT):%d/%m %H:%M:%S} {msg}"
-    print(linha, flush=True)
+    try:
+        print(linha, flush=True)
+    except Exception:
+        pass
     try:
         if LOG.exists() and LOG.stat().st_size > 2_000_000:
             LOG.replace(LOG.with_suffix(".old.log"))
