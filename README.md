@@ -474,6 +474,25 @@ gráfico de candles do pregão com as linhas da operação. Abre direto em
   Conferido nos cinco ativos operados: candles fechados desde 11/09 idênticos aos do Profit e as
   posições abertas iguais às da simulação só com os candles dele. A entrada da PETR4 passou de
   48,03 (abertura de 17/09) para 48,69 (after-market das 17:30 de 16/09), como no Profit.
+- **Sinais durante o pregão (17/09/2026):** o painel mostrou compras da BPAC11 às 11:45 e às 12:15 que
+  o Profit não deu. O que se descobriu:
+  - o **cache de candles do Profit não é gravado durante o pregão**: ele escreve o arquivo `.min` quando
+    um gráfico é aberto ou recarregado (ou um backtest roda) — e escreve junto o candle em formação.
+    Então, no pregão, os candles de hoje saem do RTD;
+  - nos candles montados pelo RTD o **preço bate** (1 a 2 centavos de diferença na máxima ou mínima, de
+    vez em quando), mas o **volume sai ~12% maior** que o do gráfico do Profit, sempre no mesmo sentido
+    (medido em 15/09 com o pregão inteiro: Profit ÷ RTD de 0,87 a 0,90 nos cinco ativos). As estratégias
+    de pullback exigem volume acima da média de 20 candles, e o candle do RTD passava com folga falsa.
+
+  Correções: o volume das barras do RTD é multiplicado pelo fator medido de cada ativo
+  (`FATOR_VOLUME_RTD`); depois de um silêncio do RTD a quantidade acumulada no período não cai num
+  candle só (a barra fica marcada como falha); do cache do Profit entra o candle que fechou antes de o
+  arquivo ser gravado e, entre os já fechados no relógio, também o que o RTD não cobriu inteiro. E,
+  como o RTD ainda erra um candle por alguns por cento, **sinal de hoje em candle montado pelo RTD
+  que muda com um detalhe** (volume ±15%, máxima/mínima ±2 centavos, fechamento ±1 centavo —
+  `sinal_no_limite`) aparece como **"a confirmar"** no cartão, com aviso em amarelo, e o aviso do
+  vigia pede para conferir a coloração no Profit antes de entrar. Candle que veio inteiro do cache do
+  Profit é o do gráfico dele e nunca ganha esse aviso.
 - **Aba Opções sem vencimento (17/09/2026):** o opcoes.net.br devolve **429 (Too Many Requests)** depois
   de uns 5 pedidos seguidos. A coleta buscava 8 vencimentos em ordem de data, as semanais gastavam a
   cota e o 16/10 — o único mensal da janela, com o 18/09 a 1 DU — voltava recusado, deixando a aba

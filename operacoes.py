@@ -754,6 +754,14 @@ def barras_5min(ativo: str, faixa: str = "5d") -> pd.DataFrame:
     return df.dropna(subset=["open", "high", "low", "close"])
 
 
+# Volume do Profit ÷ volume montado pelo RTD, por candle (mediana), medido em 15/09/2026 com o
+# coletor gravando o pregão inteiro. A quantidade acumulada do RTD sai ~12% maior que a soma dos
+# candles do gráfico do Profit, sempre no mesmo sentido; sem a correção, o filtro "volume acima da
+# média de 20" passava fácil nos candles do RTD e o painel deu compras da BPAC11 que o Profit não deu.
+FATOR_VOLUME_RTD = {"BPAC11": 0.895, "VALE3": 0.890, "PETR4": 0.881, "ITUB4": 0.866, "BOVA11": 0.886,
+                    "BBAS3": 0.88}
+
+
 def barras_rtd(ativo: str, pasta, dia) -> pd.DataFrame:
     """Barras de 5 min do pregão `dia` a partir das cotações gravadas pelo coletor RTD.
 
@@ -790,6 +798,12 @@ def barras_rtd(ativo: str, pasta, dia) -> pd.DataFrame:
     s = pd.DataFrame({"ult": df["ult"].to_numpy(), "qtt": df["qtt"].to_numpy()}, index=idx.to_numpy())
     s.index = pd.DatetimeIndex(s.index).tz_convert(BRT)
     s["vol"] = s["qtt"].diff().clip(lower=0).fillna(0)       # na ordem em que chegou
+    # depois de um silêncio (Profit sem mandar cotação), a primeira linha traz a quantidade acumulada
+    # do período todo: jogar isso num candle só infla ele e a média de volume dos 20 seguintes (em
+    # 17/09/2026, 1,27 milhão num candle de 15 min da BPAC11). Fica sem volume e marcado como falha.
+    silencio = pd.Series(s.index).diff() > pd.Timedelta(seconds=90)
+    s.loc[silencio.to_numpy(), "vol"] = 0.0
+    s["falha"] = silencio.to_numpy()
     s = s.sort_index(kind="stable")
     # pregão, leilão de fechamento e after-market (o Profit mostra negócios até ~18:25)
     s = s[(s.index.strftime("%H:%M") >= "10:00") & (s.index.strftime("%H:%M") <= "18:30")]
@@ -797,7 +811,12 @@ def barras_rtd(ativo: str, pasta, dia) -> pd.DataFrame:
         return pd.DataFrame()
     agrup = s.resample("5min", label="left", closed="left", origin="start_day")
     barras = pd.DataFrame({"open": agrup["ult"].first(), "high": agrup["ult"].max(), "low": agrup["ult"].min(),
-                           "close": agrup["ult"].last(), "volume": agrup["vol"].sum()}).dropna(subset=["open"])
+                           "close": agrup["ult"].last(),
+                           "volume": agrup["vol"].sum() * FATOR_VOLUME_RTD.get(ativo, 0.88),
+                           "falha": agrup["falha"].max()}).dropna(subset=["open"])
+    barras["falha"] = barras["falha"].fillna(0).astype(bool)
+    if len(barras) and s.index[0] - barras.index[0] > pd.Timedelta(seconds=60):
+        barras.iloc[0, barras.columns.get_loc("falha")] = True     # coletor começou com a barra andando
     barras.attrs["inicio"] = s.index[0]
     barras.attrs["ultima"] = s.index[-1]
     return barras
@@ -951,8 +970,20 @@ def inicio_do_candle(idx: pd.DatetimeIndex, minutos: int) -> pd.DatetimeIndex:
 COLUNAS_OHLCV = ["open", "high", "low", "close", "volume"]
 
 
+def candles_completos_no_rtd(rtd: pd.DataFrame | None, minutos: int) -> set:
+    """Inícios dos candles de `minutos` que o coletor cobriu inteiros: todas as barras de 5 min
+    presentes e nenhuma com falha (silêncio no meio ou coletor ligando com a barra andando)."""
+    if rtd is None or rtd.empty:
+        return set()
+    boas = rtd.index[~rtd["falha"].fillna(False).astype(bool)] if "falha" in rtd else rtd.index
+    if len(boas) == 0:
+        return set()
+    por_candle = pd.Series(1, index=boas).groupby(inicio_do_candle(boas, minutos)).sum()
+    return set(por_candle[por_candle >= max(1, minutos // 5)].index)
+
+
 def usar_candles_do_profit(barras: pd.DataFrame, profit: pd.DataFrame, minutos: int, hoje,
-                           agora: datetime | None = None) -> pd.DataFrame:
+                           agora: datetime | None = None, rtd: pd.DataFrame | None = None) -> pd.DataFrame:
     """Candles do Profit no lugar dos montados aqui: pregões passados inteiros e, hoje, todo candle
     que ele já fechou e gravou. O RTD fica com o candle em formação.
 
@@ -974,27 +1005,61 @@ def usar_candles_do_profit(barras: pd.DataFrame, profit: pd.DataFrame, minutos: 
         barras = passado
     if barras.empty:
         return do_dia.reindex(columns=COLUNAS_OHLCV)
-    return completar_com_profit(barras, do_dia, minutos, agora)
+    return completar_com_profit(barras, do_dia, minutos, agora, rtd)
 
 
 def completar_com_profit(barras: pd.DataFrame, profit: pd.DataFrame, minutos: int,
-                         agora: datetime | None = None) -> pd.DataFrame:
-    """Candles de hoje que o Profit já fechou entram no lugar dos montados com RTD e Yahoo.
+                         agora: datetime | None = None, rtd: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Candles de hoje do cache do Profit no lugar dos montados com RTD e Yahoo.
 
     `profit` vem no tempo gráfico da estratégia e entra como uma barra única no início de cada
-    período — o agrupamento devolve o mesmo candle. Só os fechados (início + período ≤ agora): o
-    candle em formação continua saindo do coletor, tick a tick.
+    período — o agrupamento devolve o mesmo candle. Entra o candle que já tinha fechado quando o
+    Profit gravou o arquivo (`agora`) e, dos que já fecharam no relógio, também o que o coletor não
+    cobriu inteiro — o do cache pode faltar o último minuto, mas o do RTD falta o silêncio todo.
+    O candle em formação continua saindo do coletor.
     """
     if profit is None or profit.empty or barras.empty:
         return barras
     agora = agora or datetime.now(BRT)
+    relogio = datetime.now(BRT)
     passo = pd.Timedelta(minutes=minutos)
-    novos = profit[[t + passo <= agora for t in inicio_do_candle(profit.index, minutos)]]
+    completos = candles_completos_no_rtd(rtd, minutos)
+    novos = profit[[t + passo <= agora or (t + passo <= relogio and t not in completos)
+                    for t in inicio_do_candle(profit.index, minutos)]]
     if novos.empty:
         return barras
     trocados = set(inicio_do_candle(novos.index, minutos))
     manter = [t not in trocados for t in inicio_do_candle(barras.index, minutos)]
     return pd.concat([barras[manter], novos.reindex(columns=COLUNAS_OHLCV)]).sort_index()
+
+
+def sinal_no_limite(est: "Estrategia", candles: pd.DataFrame, hora) -> bool:
+    """O sinal do candle `hora` depende de detalhe? Refaz os indicadores da estratégia com o candle
+    ligeiramente diferente — volume 15% menor ou maior, máxima e mínima 2 centavos para dentro ou
+    para fora, fechamento 1 centavo acima ou abaixo — e responde se em alguma dessas o sinal some.
+
+    Durante o pregão os candles saem do RTD, que acerta o preço com 1 a 2 centavos e o volume com
+    uns 10% de folga por candle; o Profit monta com cada negócio. Sinal que passa raspando pode não
+    existir no Profit (BPAC11, 17/09/2026 12:15: mínima 60,84 contra média de 9 em 60,85)."""
+    colunas = ["open", "high", "low", "close", "volume"]
+    if hora not in candles.index:
+        return False
+    base = candles.loc[:hora, colunas].astype(float)
+    x = est.indicadores(base)
+    lado = "sinal_compra" if bool(x.loc[hora, "sinal_compra"]) else "sinal_venda"
+    if not bool(x.loc[hora, lado]):
+        return False
+    h, l, c = base.loc[hora, "high"], base.loc[hora, "low"], base.loc[hora, "close"]
+    variantes = [{"volume": base.loc[hora, "volume"] * f} for f in (0.85, 1.15)]
+    variantes += [{"high": h + d, "low": l - d} for d in (0.02, -0.02) if l - d <= h + d]
+    variantes += [{"close": min(h, max(l, c + d))} for d in (0.01, -0.01)]
+    for mudanca in variantes:
+        d = base.copy()
+        for coluna, valor in mudanca.items():
+            d.loc[hora, coluna] = valor
+        if not bool(est.indicadores(d).loc[hora, lado]):
+            return True
+    return False
 
 
 def candles_de_5min(barras_5m: pd.DataFrame, minutos: int) -> pd.DataFrame:

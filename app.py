@@ -2045,6 +2045,9 @@ section[data-testid="stSidebar"] .sb.first{border-top:none;padding-top:0;margin-
 .opc-g em{display:block;font:400 11.5px/1.3 var(--sans);font-style:normal;color:var(--t3);margin-top:3px;}
 .opc-g em.ok{color:var(--up);}
 .dx .opx-vivo{color:var(--up);font-weight:600;}
+.dx .opc-lim{display:flex;gap:8px;align-items:flex-start;margin:4px 0 10px;padding:9px 11px;border-radius:10px;background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.35);font:400 12.5px/1.45 var(--sans);color:#FCD34D;}
+.dx .opc-lim b{font-weight:600;color:#FDE68A;}
+.dx .sts.limite{color:#FCD34D;border-color:rgba(245,158,11,.5);background:rgba(245,158,11,.14);} .dx .opc-lim svg.ic{margin-top:2px;flex:none;}
 .res-g{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));padding:6px 18px 4px;}
 .res-g>div{padding:12px 12px 12px 0;min-width:0;}
 .res-g span{display:block;font:500 10.5px/1.2 var(--sans);letter-spacing:.07em;text-transform:uppercase;color:var(--t3);}
@@ -3291,7 +3294,7 @@ DIAS_DO_PROFIT = 120     # dias corridos de candles do Profit na simulação (aq
 
 
 @cache_dados(ttl=120, show_spinner=False)
-def _candles_profit(ativo: str, minutos: int) -> pd.DataFrame:
+def _candles_profit(ativo: str, minutos: int) -> tuple[pd.DataFrame, float | None]:
     """Candles que o próprio Profit guarda no disco (%APPDATA%\\Nelogica\\…) no tempo gráfico da
     estratégia: a mesma fonte do gráfico dele, com leilão de fechamento e after-market. Só os
     já fechados — o Profit grava o candle quando ele fecha. Fora do PC dele não existe, e volta
@@ -3299,9 +3302,10 @@ def _candles_profit(ativo: str, minutos: int) -> pd.DataFrame:
     try:
         import resultados
         d = resultados.candles(ativo, minutos)
+        gravado = resultados.gravado_em(ativo, minutos)
     except Exception:
-        return pd.DataFrame()
-    return d[d.index >= pd.Timestamp.now(tz=BRT).normalize() - pd.Timedelta(days=DIAS_DO_PROFIT)]
+        return pd.DataFrame(), None
+    return d[d.index >= pd.Timestamp.now(tz=BRT).normalize() - pd.Timedelta(days=DIAS_DO_PROFIT)], gravado
 
 
 def barras_estrategia(ativo: str) -> pd.DataFrame:
@@ -3328,7 +3332,11 @@ def barras_estrategia(ativo: str) -> pd.DataFrame:
     rtd_hoje = ope.barras_rtd(ativo, PASTA_RT, hoje)
     barras = ope.juntar_barras(barras, rtd_hoje) if len(barras) else rtd_hoje
     if est is not None:
-        barras = ope.usar_candles_do_profit(barras, _candles_profit(ativo, est.minutos), est.minutos, hoje)
+        profit, gravado = _candles_profit(ativo, est.minutos)
+        # candle de hoje só conta como fechado se terminou antes de o Profit gravar o arquivo (ele grava o
+        # candle em formação junto); 1 min de folga para a diferença entre o relógio do PC e o da B3
+        fechado_ate = datetime.fromtimestamp(gravado, BRT) - timedelta(minutes=1) if gravado else None
+        barras = ope.usar_candles_do_profit(barras, profit, est.minutos, hoje, fechado_ate, rtd_hoje)
     if barras.empty:
         return barras
     try:
@@ -3692,7 +3700,21 @@ def _cartao_operacao(ativo: str, est, res, formando, erro: str | None, opcao: di
     ent = op.entrada
     resultado = op.resultado(preco)
     pct = _pct_resultado(op, preco)
+    no_limite = False
+    if op.hora_sinal.date() == datetime.now(BRT).date():
+        try:
+            # candle que veio inteiro do cache do Profit é o do gráfico dele: nada a conferir
+            import resultados
+            no_limite = not resultados.candle_fechado_no_profit(ativo, est.minutos, op.hora_sinal) and \
+                ope.sinal_no_limite(est, res.candles, op.hora_sinal)
+        except Exception:
+            no_limite = False
+    aviso_limite = (f'<div class="opc-lim">{_ic("alerta")}<span><b>Sinal no limite dos filtros.</b> Com um detalhe '
+                    f'de volume ou de preço ele não sai; confira a coloração no Profit antes de entrar.</span></div>'
+                    if no_limite else "")
     lado_txt, classe = ("Comprado", "compra") if op.lado > 0 else ("Vendido", "venda")
+    if no_limite:
+        lado_txt, classe = f"{lado_txt} · a confirmar", "limite"
     icone = _ic("sobe") if op.lado > 0 else _ic("desce")
     parcial = next((e for e in op.execucoes if e.rotulo == "parcial"), None)
     tem_parcial = not pd.isna(op.alvo1)
@@ -3735,7 +3757,7 @@ def _cartao_operacao(ativo: str, est, res, formando, erro: str | None, opcao: di
     return (f'<div class="card opc"><div class="opc-h">{cab}<span class="sts {classe}">{icone}{lado_txt}</span></div>'
             f'<div class="opc-res"><div class="v {tom}">{_num(pct, 2, sufixo="%", sinal=True)}</div>'
             f'<div class="d">sobre a entrada de {_moeda(ent.preco)} · {_num(abs(op.qtd), 0)} de '
-            f"{est.lote} ações abertas</div></div>{regua}"
+            f"{est.lote} ações abertas</div></div>{aviso_limite}{regua}"
             f'<div class="opc-g">'
             f'<div><span>Entrada</span><b>{_moeda(ent.preco)}</b><em>{_quando(ent.hora, dia)} · sinal {_quando(op.hora_sinal, dia)}</em></div>'
             f'<div><span>Preço atual</span><b>{_moeda(preco)}</b><em>candle das {ultimo.name:%H:%M}</em></div>'

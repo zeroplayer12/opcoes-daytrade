@@ -70,6 +70,29 @@ def candles(ativo: str, minutos: int) -> pd.DataFrame:
     return d[d.index >= AQUECE]
 
 
+def gravado_em(ativo: str, minutos: int) -> float | None:
+    """Quando o Profit gravou por último o arquivo de candles deste ano (timestamp). Ele grava ao
+    abrir ou recarregar um gráfico, não a cada candle — e grava o candle em formação também, então
+    só vale como candle fechado o que terminou antes dessa hora."""
+    ano = pd.Timestamp.now().year
+    arquivos = list((DB / "temp").glob(f"{ativo}_B_0_1_{minutos}_1_0_0_{ano}.min")) + \
+        list((DB / "assets" / f"{ativo}_B_0").glob(f"{ativo}_B_0_1_{minutos}_1_1_0_{ano}.min"))
+    return max((a.stat().st_mtime for a in arquivos), default=None)
+
+
+def candle_fechado_no_profit(ativo: str, minutos: int, hora) -> bool:
+    """O candle `hora` já está inteiro no cache do Profit (terminou antes de o arquivo ser gravado)?
+    Nesse caso ele é exatamente o do gráfico dele; senão, saiu do RTD e é aproximado."""
+    try:
+        gravado = gravado_em(ativo, minutos)
+        if gravado is None or hora not in candles(ativo, minutos).index:
+            return False
+    except Exception:
+        return False
+    fechado_ate = pd.Timestamp(gravado, unit="s", tz="UTC").tz_convert(ope.BRT) - pd.Timedelta(minutes=1)
+    return hora + pd.Timedelta(minutes=minutos) <= fechado_ate
+
+
 def _eventos(ativo: str):
     r = requests.get(ope.YAHOO_CHART.format(simbolo=f"{ativo}.SA"),
                      params={"range": "10y", "interval": "1d", "events": "div,split"}, headers=ope._UA, timeout=30)

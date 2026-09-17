@@ -92,7 +92,17 @@ def eventos(ativo: str, est, res, agora: datetime, dias: int = 5) -> list[dict]:
             quando = f"Entrada a {_r(ent.preco)} ({ent.hora:%H:%M})"
         else:
             quando = f"Entra a mercado na abertura do próximo candle (sinal no fechamento a {_r(op.preco_sinal)})"
-        ev(op, "sinal", "sinal", fim_sinal, f"{ativo} · sinal de {lado}", f"{quando} · {niveis}")
+        limite = ""
+        if fim_sinal.date() == agora.date():
+            try:
+                import operacoes
+                import resultados
+                if not resultados.candle_fechado_no_profit(ativo, est.minutos, op.hora_sinal) and \
+                        operacoes.sinal_no_limite(est, res.candles, op.hora_sinal):
+                    limite = " · SINAL NO LIMITE dos filtros: confira a coloração no Profit antes de entrar"
+            except Exception:
+                pass
+        ev(op, "sinal", "sinal", fim_sinal, f"{ativo} · sinal de {lado}", f"{quando} · {niveis}{limite}")
         parcial = next((e for e in op.execucoes if e.rotulo == "parcial"), None)
         if parcial is not None:
             ev(op, "parcial", "parcial", parcial.hora, f"{ativo} · parcial executada",
