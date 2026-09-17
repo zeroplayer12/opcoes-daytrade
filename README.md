@@ -446,6 +446,20 @@ gráfico de candles do pregão com as linhas da operação. Abre direto em
   bruto, ajustado aqui por desdobramentos e proventos), 200 ações, sem custos. O vigia refaz a
   conta todo dia depois das 18:40 (~30 s); à mão, `python resultados.py`. É resultado em ações:
   com a opção, o ganho acompanha o delta e a opção perde valor com o tempo.
+- **Aba Realizadas (17/09/2026):** as operações encerradas das 5 estratégias em 7, 30 ou 90 dias
+  (`?aba=realizadas`), para conferir contra a lista de operações do Profit: sinal, entrada, saída
+  com o motivo (alvo, stop, zero a zero, parcial com a fração), o resultado **na ação** (% sobre a
+  entrada) e o resultado **na opção** — compra no sinal (call na compra, put na venda) e venda nas
+  saídas da estratégia, na mesma proporção. Mesma simulação e mesmos candles da aba Operações.
+  - **Qual opção:** a anotada em `dados_rt/diario_opcoes.json` na primeira vez que a operação aparece
+    no painel ou no vigia (é a sugerida no sinal, a que ele compra). Operações de antes do diário
+    usam uma equivalente pelas regras: vencimento mensal que cobre o tempo típico + folga e strike
+    de |Δ| 0,55 na entrada, marcada "(equivalente)".
+  - **Qual preço:** o que o coletor gravou da opção no instante da execução — abertura do candle
+    para entrada e stop; para alvo e parcial, o primeiro negócio gravado da ação que chegou no
+    preço da ordem. Sem gravação, Black-Scholes com a ação no preço da execução e a volatilidade
+    implícita da entrada gravada ou, sem ela, a histórica de 20 pregões com folga de 15%. A célula
+    diz "gravado", "estimado" ou "parte gravado".
 - **Candles do Profit na simulação (17/09/2026):** a venda do BOVA11 das 11:00 abriu no Profit e não
   apareceu no painel, por dois motivos em sequência — os dois vinham de o painel montar candles com
   dados que não são os do Profit:

@@ -130,6 +130,7 @@ class Vigia:
             except Exception as exc:
                 return f"\nOpção sugerida indisponível agora ({exc}); confira na aba Opções."
             app.assinar_opcoes([p["ticker"]])
+            app.anotar_opcao(ev["ativo"], op, info)
             self.estado["opcoes"][ev["base"]] = {"ticker": p["ticker"], "tipo": p["tipo"], "dia": hoje}
             return "\n" + p["resumo"]
         guardada = self.estado["opcoes"].get(ev["base"])

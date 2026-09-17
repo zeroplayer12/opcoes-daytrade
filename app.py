@@ -2055,6 +2055,8 @@ section[data-testid="stSidebar"] .sb.first{border-top:none;padding-top:0;margin-
 .dx .hm td.c.mes-at{outline:1px dashed var(--t3);outline-offset:-3px;}
 .dx .hm td.c.ano{font-weight:700;}
 .dx .rk td.up{color:var(--up);} .dx .rk td.down{color:var(--down);}
+.dx .rk td small{display:block;font:400 11px/1.35 var(--sans);color:var(--t3);margin-top:3px;}
+.dx .rk td.num{font-weight:600;}
 .dx .opc-vazio{margin:14px 0 12px;font:400 13px/1.55 var(--sans);color:var(--t2);}
 .opc.pendente .at-tk{color:var(--t2);}
 .opc-t{display:block;font:600 15px/1.2 var(--sans);color:var(--t1);}
@@ -2893,14 +2895,19 @@ def main() -> None:
     _manter_estado()
     cabecalho = st.empty()
     rotulos = [":material/candlestick_chart: Opções", ":material/public: Correlações",
-               ":material/monitoring: Operações"]
-    # ?aba=correlacoes ou ?aba=operacoes abre direto na aba (dá para deixar nos favoritos)
-    inicial = {"correlacoes": rotulos[1], "operacoes": rotulos[2]}.get(st.query_params.get("aba"), rotulos[0])
-    aba_opcoes, aba_mercados, aba_operacoes = st.tabs(rotulos, default=inicial, key="aba", on_change="rerun")
+               ":material/monitoring: Operações", ":material/receipt_long: Realizadas"]
+    # ?aba=correlacoes, ?aba=operacoes ou ?aba=realizadas abre direto na aba (dá para deixar nos favoritos)
+    inicial = {"correlacoes": rotulos[1], "operacoes": rotulos[2],
+               "realizadas": rotulos[3]}.get(st.query_params.get("aba"), rotulos[0])
+    aba_opcoes, aba_mercados, aba_operacoes, aba_realizadas = st.tabs(rotulos, default=inicial, key="aba",
+                                                                      on_change="rerun")
     # Só a aba aberta roda: uma aba não espera pelos dados das outras.
     if aba_operacoes.open:
         with aba_operacoes:
             pagina_operacoes(cabecalho)
+    elif aba_realizadas.open:
+        with aba_realizadas:
+            pagina_realizadas(cabecalho)
     elif aba_mercados.open:
         with aba_mercados:
             pagina_correlacoes(cabecalho)
@@ -3191,6 +3198,7 @@ def _barras_recentes(ativo: str) -> pd.DataFrame:
 PASTA_RT = Path(__file__).resolve().parent / "dados_rt"   # onde o coletor_rtd.py grava
 PASTA_OPC = PASTA_RT / "opcoes"            # opções assinadas no RTD (coletor_rtd.py)
 ARQ_ASSINAR, ARQ_AGORA = PASTA_OPC / "assinar.json", PASTA_OPC / "agora.json"
+DIARIO_OPCOES = PASTA_RT / "diario_opcoes.json"     # a opção sugerida em cada operação
 URL_B3_INSTRUMENTO = "https://cotacao.b3.com.br/mds/api/v1/InstrumentQuotation/{}"
 
 
@@ -3211,6 +3219,30 @@ def assinar_opcoes(tickers) -> None:
         tmp = ARQ_ASSINAR.with_suffix(".tmp")
         tmp.write_text(json.dumps(pedidos), encoding="utf-8")
         tmp.replace(ARQ_ASSINAR)
+    except OSError:
+        pass
+
+
+def anotar_opcao(ativo: str, op, info: dict | None) -> None:
+    """Guarda a opção sugerida na primeira vez que a operação aparece — é a que ele compra — para a
+    aba Realizadas medir o resultado nela, mesmo depois que a sugestão do dia mudar de série."""
+    if op is None or not info or "opcao" not in info:
+        return
+    chave = f"{ativo}|{op.hora_sinal:%Y%m%d%H%M}"
+    try:
+        diario = json.loads(DIARIO_OPCOES.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        diario = {}
+    if chave in diario:
+        return
+    o = info["opcao"]
+    diario[chave] = {"ticker": str(o["ticker"]), "tipo": info["tipo"], "strike": float(o["strike"]),
+                     "venc": f"{info['venc']:%Y-%m-%d}", "anotado": datetime.now(BRT).isoformat(timespec="seconds")}
+    try:
+        PASTA_RT.mkdir(exist_ok=True)
+        tmp = DIARIO_OPCOES.with_suffix(".tmp")
+        tmp.write_text(json.dumps(diario, ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp.replace(DIARIO_OPCOES)
     except OSError:
         pass
 
@@ -3997,6 +4029,254 @@ def _secao_resultados() -> None:
               f"<tbody>{corpo}</tbody></table></div></div>")
 
 
+# ---------------- Aba Realizadas -------------------------------------------------------
+TAXA_PADRAO = 0.1075     # juro do Black-Scholes, o mesmo padrão da aba Opções
+D1_DELTA_55 = 0.12566    # N(d1) = 0,55: |Δ| no meio da faixa 0,50–0,70 das regras
+
+
+@cache_dados(ttl=120, show_spinner=False)
+def _opcao_no_dia(ticker: str, dia: date) -> pd.DataFrame:
+    """Cotações da opção que o coletor gravou num pregão: meio do book (ou o último) por instante."""
+    try:
+        d = pd.read_csv(PASTA_OPC / f"{dia:%Y-%m-%d}.csv")
+    except (OSError, ValueError):
+        return pd.DataFrame()
+    d = d[(d["opcao"] == ticker) & (d["ult"] > 0)]
+    if d.empty:
+        return pd.DataFrame()
+    compra, venda = d["compra"].fillna(0), d["venda"].fillna(0)
+    preco = np.where((compra > 0) & (venda >= compra), (compra + venda) / 2, d["ult"])
+    idx = pd.to_datetime(d["ts"], unit="s", utc=True).dt.tz_convert(BRT)
+    return pd.DataFrame({"preco": preco}, index=pd.DatetimeIndex(idx)).sort_index()
+
+
+def _preco_gravado(ticker: str | None, quando, tolerancia_min: int = 10) -> float | None:
+    """Preço gravado da opção no instante: a primeira cotação a partir dele ou, sem ela, a última
+    antes — sempre dentro da tolerância."""
+    if not ticker or quando is None:
+        return None
+    d = _opcao_no_dia(ticker, quando.date())
+    if d.empty:
+        return None
+    tol = pd.Timedelta(minutes=tolerancia_min)
+    depois = d[(d.index >= quando) & (d.index <= quando + tol)]
+    if len(depois):
+        return float(depois["preco"].iloc[0])
+    antes = d[(d.index < quando) & (d.index >= quando - tol)]
+    return float(antes["preco"].iloc[-1]) if len(antes) else None
+
+
+@cache_dados(ttl=300, show_spinner=False)
+def _ticks_do_dia(ativo: str, dia: date) -> pd.Series:
+    """Cada negócio da ação que o coletor gravou no pregão."""
+    try:
+        d = pd.read_csv(PASTA_RT / f"{dia:%Y-%m-%d}.csv")
+    except (OSError, ValueError):
+        return pd.Series(dtype=float)
+    d = d[(d["ativo"] == ativo) & (d["ult"] > 0)]
+    idx = pd.to_datetime(d["ts"], unit="s", utc=True).dt.tz_convert(BRT)
+    return pd.Series(d["ult"].to_numpy(), index=pd.DatetimeIndex(idx)).sort_index()
+
+
+def _momento(ativo: str, minutos: int, e):
+    """Quando a execução aconteceu dentro do candle. A mercado (entrada, stop) é a abertura dele;
+    ordem limite (alvo, parcial) é o primeiro negócio gravado que chegou no preço — sem negócio
+    gravado não dá para saber, e volta None."""
+    if e.rotulo not in ("alvo", "parcial"):
+        return e.hora
+    ticks = _ticks_do_dia(ativo, e.hora.date())
+    if ticks.empty:
+        return None              # dia sem o coletor gravando
+    janela = ticks[(ticks.index >= e.hora) & (ticks.index < e.hora + pd.Timedelta(minutes=minutos))]
+    toque = janela[janela >= e.preco - 1e-9] if e.qtd < 0 else janela[janela <= e.preco + 1e-9]
+    return toque.index[0] if len(toque) else None
+
+
+def _vol_historica(candles: pd.DataFrame, ate) -> float:
+    """Volatilidade de 20 pregões antes da entrada, com a folga de ~15% que a implícita costuma ter
+    sobre a histórica. Só entra quando não há preço gravado da opção para tirar a implícita."""
+    fech = candles["close"][candles.index < ate.normalize()].astype(float)
+    diario = fech.groupby(fech.index.date).last()
+    r = np.log(diario).diff().dropna().tail(20)
+    return max(0.15, float(r.std() * math.sqrt(252)) * 1.15) if len(r) >= 5 else 0.30
+
+
+def _motivo(e, op) -> str:
+    if e.rotulo == "stop":
+        return "zero a zero" if op.stop_movido else "stop"
+    return e.rotulo
+
+
+def _resultado_na_opcao(ativo: str, est, op, candles: pd.DataFrame, diario: dict) -> dict:
+    """Resultado de comprar a opção no sinal (call na compra, put na venda) e vender nas saídas da
+    estratégia, na mesma proporção delas.
+
+    A opção é a anotada no diário quando a operação apareceu no painel ou no vigia; sem ela, uma
+    equivalente pelas regras (vencimento que cobre o tempo típico + folga, |Δ| 0,55 na entrada).
+    Cada preço é o gravado pelo coletor naquele instante e, na falta dele, Black-Scholes com a ação
+    no preço da execução e a volatilidade implícita da entrada (ou a histórica)."""
+    ent = op.entrada
+    dia = ent.hora.date()
+    anotada = diario.get(f"{ativo}|{op.hora_sinal:%Y%m%d%H%M}")
+    sigma = _vol_historica(candles, ent.hora)
+    if anotada:
+        ticker, tipo = anotada["ticker"], anotada["tipo"]
+        strike, venc = float(anotada["strike"]), date.fromisoformat(anotada["venc"])
+    else:
+        ticker, tipo = None, "CALL" if op.lado > 0 else "PUT"
+        minimo = max(DIAS_TIPICOS.get(ativo, 2) + FOLGA_DU, DU_MIN_PADRAO)
+        venc = next((v for v in calendario_vencimentos(dia) if dias_uteis(dia, v) >= minimo), None)
+        if venc is None:
+            return {}
+        t = dias_uteis(dia, venc) / 252.0
+        d1 = D1_DELTA_55 if tipo == "CALL" else -D1_DELTA_55
+        strike = ent.preco * math.exp(-d1 * sigma * math.sqrt(t) + (TAXA_PADRAO + sigma ** 2 / 2) * t)
+
+    def prazo(quando):
+        return max(dias_uteis(quando.date(), venc), 0) / 252.0
+
+    fontes = []
+    p_ent = _preco_gravado(ticker, ent.hora)
+    if p_ent:
+        iv = volatilidade_implicita(p_ent, ent.preco, strike, prazo(ent.hora), TAXA_PADRAO, tipo)
+        sigma = iv or sigma
+        fontes.append("gravado")
+    else:
+        p_ent = _black_scholes(float(ent.preco), strike, prazo(ent.hora), sigma, TAXA_PADRAO, tipo)[0]
+        fontes.append("estimado")
+    if not p_ent or p_ent <= 0:
+        return {}
+    total = abs(ent.qtd)
+    pct = media = peso = 0.0
+    for e in op.execucoes:
+        if e.rotulo == "entrada":
+            continue
+        frac = abs(e.qtd) / total
+        quando = _momento(ativo, est.minutos, e)
+        p = _preco_gravado(ticker, quando)
+        if p:
+            fontes.append("gravado")
+        else:
+            p = _black_scholes(float(e.preco), strike, prazo(quando or e.hora), sigma, TAXA_PADRAO, tipo)[0]
+            fontes.append("estimado")
+        pct += frac * (p / p_ent - 1) * 100
+        media, peso = media + frac * p, peso + frac
+    fonte = fontes[0] if len(set(fontes)) == 1 else "misto"
+    return {"ticker": ticker, "tipo": tipo, "strike": strike, "venc": venc, "entrada": p_ent,
+            "saida": media / peso if peso else None, "pct": pct, "fonte": fonte}
+
+
+@cache_dados(ttl=60, show_spinner=False)
+def _operacoes_realizadas(dias: int) -> list[dict]:
+    """Operações encerradas nos últimos `dias` (pela saída), dos ativos operados, com o resultado
+    na ação e na opção. Mesma simulação e mesmos candles da aba Operações."""
+    try:
+        diario = json.loads(DIARIO_OPCOES.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        diario = {}
+    desde = pd.Timestamp.now(tz=BRT).normalize() - pd.Timedelta(days=dias)
+    linhas = []
+    for ativo in ATIVOS_OPERADOS:
+        est = ope.ESTRATEGIAS.get(ativo)
+        if est is None:
+            continue
+        try:
+            res, _ = ope.situacao(est, barras_estrategia(ativo))
+        except Exception:
+            continue
+        for op in res.operacoes:
+            if op.aberta or op.entrada is None or op.execucoes[-1].hora < desde:
+                continue
+            saidas = [e for e in op.execucoes if e.rotulo != "entrada"]
+            try:
+                opcao = _resultado_na_opcao(ativo, est, op, res.candles, diario)
+            except Exception:
+                opcao = {}
+            linhas.append({
+                "ativo": ativo, "lado": op.lado, "sinal": op.hora_sinal,
+                "entrada": (op.entrada.hora, op.entrada.preco),
+                "saidas": [(_motivo(e, op), e.hora, e.preco, abs(e.qtd) / abs(op.entrada.qtd)) for e in saidas],
+                "acao": _pct_resultado(op), "opcao": opcao})
+    return sorted(linhas, key=lambda l: l["saidas"][-1][1], reverse=True)
+
+
+def pagina_realizadas(cabecalho) -> None:
+    with st.sidebar:
+        _sb("Operações realizadas", primeiro=True)
+        st.caption("Resultado na ação em % sobre a entrada. Na opção, compra no sinal (call na compra, put "
+                   "na venda) e venda nas saídas da estratégia, na mesma proporção; o preço é o gravado "
+                   "pelo coletor quando existe e, sem ele, estimado por Black-Scholes.")
+    _html(_moldura("Operações encerradas das estratégias: resultado na ação e na opção",
+                   f'<span class="pill">{_ic("relogio")}Recalculado às <b>{datetime.now(BRT):%H:%M}</b></span>'),
+          cabecalho)
+    c_per, c_at = st.columns([3, 6], vertical_alignment="bottom")
+    with c_per:
+        dias = st.segmented_control("Período", [7, 30, 90], key="real_periodo", required=True, default=30,
+                                    format_func=lambda d: f"{d} dias") or 30
+    with c_at:
+        filtro = st.segmented_control("Ativo", ["Todos"] + ATIVOS_OPERADOS, key="real_ativo", required=True,
+                                      default="Todos") or "Todos"
+    with st.spinner("Recalculando as operações…"):
+        linhas = _operacoes_realizadas(int(dias))
+    if filtro != "Todos":
+        linhas = [l for l in linhas if l["ativo"] == filtro]
+    if not linhas:
+        _estado_vazio("calendario", "Nenhuma operação encerrada no período",
+                      "Escolha um período maior ou outro ativo.")
+        return
+
+    def pc(v, casas=2):
+        return _num(v, casas, sufixo="%", sinal=True)
+
+    def tom(v):
+        return "up" if v > 0.005 else ("down" if v < -0.005 else "")
+
+    acao = [l["acao"] for l in linhas]
+    opcao = [l["opcao"]["pct"] for l in linhas if l["opcao"]]
+    soma_a, soma_o = sum(acao), sum(opcao)
+    tiles = (f'<div class="res-g">'
+             f'<div><span>Operações</span><b>{len(linhas)}</b><em>encerradas em {dias} dias</em></div>'
+             f'<div><span>Acerto na ação</span><b>{sum(v > 0 for v in acao) / len(acao) * 100:.0f}%</b>'
+             f'<em>{sum(v > 0 for v in acao)} no positivo</em></div>'
+             f'<div><span>Resultado na ação</span><b class="{tom(soma_a)}">{pc(soma_a)}</b>'
+             f'<em>soma das operações</em></div>'
+             f'<div><span>Resultado na opção</span><b class="{tom(soma_o)}">{pc(soma_o, 1)}</b>'
+             f'<em>soma das operações</em></div>'
+             f'<div><span>Acerto na opção</span>'
+             f'<b>{(sum(v > 0 for v in opcao) / len(opcao) * 100) if opcao else 0:.0f}%</b>'
+             f'<em>{sum(v > 0 for v in opcao)} no positivo</em></div></div>')
+    corpo = []
+    for l in linhas:
+        (h_ent, p_ent), saidas, o = l["entrada"], l["saidas"], l["opcao"]
+        venda = l["lado"] < 0
+        passos = "".join(f"<small>{m} {h:%d/%m %H:%M} · {_num(p, 2)}"
+                         + (f" · {f * 100:.0f}%" if f < 0.999 else "") + "</small>"
+                         for m, h, p, f in saidas[:-1])
+        m, h, p, _ = saidas[-1]
+        if o:
+            nome = o["ticker"] or f"{o['tipo'].lower()} {_num(o['strike'], 2)} (equivalente)"
+            opcao_txt = f"{_esc(nome)}<small>vence {o['venc']:%d/%m}</small>"
+            precos = (f"{_num(o['entrada'], 2)} → {_num(o['saida'], 2)}"
+                      f"<small>{'gravado' if o['fonte'] == 'gravado' else 'estimado' if o['fonte'] == 'estimado' else 'parte gravado'}</small>")
+            opcao_pct = f'<td class="num {tom(o["pct"])}">{pc(o["pct"], 1)}</td>'
+        else:
+            opcao_txt, precos, opcao_pct = "—", "—", '<td class="mut">—</td>'
+        corpo.append(
+            f'<tr><td class="mut">{l["sinal"]:%d/%m %H:%M}</td><td class="tk">{l["ativo"]}</td>'
+            f'<td class="{"down" if venda else "up"}">{"Venda" if venda else "Compra"}</td>'
+            f'<td>{h_ent:%d/%m %H:%M}<small>{_num(p_ent, 2)}</small></td>'
+            f'<td>{h:%d/%m %H:%M}<small>{_num(p, 2)} · {m}</small>{passos}</td>'
+            f'<td class="num {tom(l["acao"])}">{pc(l["acao"])}</td>'
+            f'<td>{opcao_txt}</td><td>{precos}</td>{opcao_pct}</tr>')
+    cab = ("<th>Sinal</th><th>Ativo</th><th>Lado</th><th>Entrada</th><th>Saída</th><th>Ação</th>"
+           "<th>Opção</th><th>Opção: entrada → saída</th><th>Na opção</th>")
+    _html(f'<div class="dx"><div class="card"><div class="card-h"><div class="t">{_ic("grade")}'
+          f'{"Todas as estratégias" if filtro == "Todos" else _esc(filtro)}</div>'
+          f'<div class="d">da saída mais recente para a mais antiga</div></div>{tiles}'
+          f'<div class="tbl-wrap"><table class="rk"><thead><tr>{cab}</tr></thead>'
+          f'<tbody>{"".join(corpo)}</tbody></table></div></div></div>')
+
+
 def pagina_operacoes(cabecalho) -> None:
     with st.sidebar:
         _sb("Operações", primeiro=True)
@@ -4057,6 +4337,9 @@ def _painel_operacoes() -> None:
             erros[ativo] = str(exc)
     opcoes = _opcoes_das_posicoes(resultados)
     assinar_opcoes([str(i["opcao"]["ticker"]) for i in opcoes.values() if i and "opcao" in i])
+    for a, info in opcoes.items():
+        if resultados.get(a):
+            anotar_opcao(a, resultados[a][0].aberta, info)
     faixa = _avisos_navegador(resultados)
     cartoes = "".join(
         _cartao_operacao(a, ope.ESTRATEGIAS[a], *(resultados.get(a) or (None, None)), erros.get(a), opcoes.get(a))
