@@ -446,6 +446,26 @@ gráfico de candles do pregão com as linhas da operação. Abre direto em
   bruto, ajustado aqui por desdobramentos e proventos), 200 ações, sem custos. O vigia refaz a
   conta todo dia depois das 18:40 (~30 s); à mão, `python resultados.py`. É resultado em ações:
   com a opção, o ganho acompanha o delta e a opção perde valor com o tempo.
+- **Candles do Profit na simulação (17/09/2026):** a venda do BOVA11 das 11:00 abriu no Profit e não
+  apareceu no painel, por dois motivos em sequência — os dois vinham de o painel montar candles com
+  dados que não são os do Profit:
+  - nos **dias anteriores** faltavam os candles do after-market (17:30, 18:30) e o leilão de
+    fechamento, que o Yahoo não tem e as estratégias usam. Agora os pregões passados (últimos 120
+    dias) saem inteiros do cache de candles do próprio Profit (`usar_candles_do_profit`);
+  - **hoje**, o candle das 10:00 tinha os mesmos preços, mas o volume vinha em parte do Yahoo (o RTD
+    ficou mudo das 10:24 às 11:13), e o pullback exige volume acima da média de 20 candles. Agora
+    todo candle de hoje que o Profit já fechou e gravou entra inteiro, com o volume dele; o RTD fica
+    com o candle em formação.
+
+  Conferido nos cinco ativos operados: candles fechados desde 11/09 idênticos aos do Profit e as
+  posições abertas iguais às da simulação só com os candles dele. A entrada da PETR4 passou de
+  48,03 (abertura de 17/09) para 48,69 (after-market das 17:30 de 16/09), como no Profit.
+- **Aba Opções sem vencimento (17/09/2026):** o opcoes.net.br devolve **429 (Too Many Requests)** depois
+  de uns 5 pedidos seguidos. A coleta buscava 8 vencimentos em ordem de data, as semanais gastavam a
+  cota e o 16/10 — o único mensal da janela, com o 18/09 a 1 DU — voltava recusado, deixando a aba
+  com "Nenhum vencimento mensal". Agora os mensais vêm primeiro, as semanais nem são buscadas com o
+  filtro de série mensal ligado (3 pedidos em vez de 8), há uma pausa curta entre pedidos e, no 429,
+  o painel espera e tenta de novo.
 - **Tudo em % (16/09/2026):** a pedido dele, a aba não mostra mais resultado em R$. Cada operação
   conta em **% sobre o valor da entrada** (preço de entrada × quantidade): é o número do cartão, o
   "no pregão" é a soma das fechadas do dia e o mês a mês é a soma das operações do mês (o R$ ficou

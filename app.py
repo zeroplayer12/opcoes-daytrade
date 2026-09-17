@@ -623,7 +623,16 @@ def _get_json(url: str, params: dict, cabecalhos: dict, timeout: int) -> dict:
 
     if requests is None:
         raise FalhaExtracao("biblioteca 'requests' não instalada")
-    resp = requests.get(url, headers=cabecalhos, params=params, timeout=timeout)
+    for tentativa in range(3):
+        resp = requests.get(url, headers=cabecalhos, params=params, timeout=timeout)
+        # 429: o opcoes.net.br recusa depois de uns 5 pedidos seguidos — espera e tenta de novo
+        if resp.status_code not in (429, 503) or tentativa == 2:
+            break
+        try:
+            espera = float(resp.headers.get("Retry-After") or 0)
+        except ValueError:
+            espera = 0.0
+        time.sleep(min(8.0, espera or 1.5 * (tentativa + 1)))
     resp.raise_for_status()
     return resp.json()
 
@@ -798,8 +807,8 @@ def _rota_selenium(ativo: str, headless: bool = True, espera: int = 25) -> pd.Da
 
 @cache_dados(ttl=180, show_spinner=False)
 def extrair_automatico(ativo: str, usar_selenium: bool = True, headless: bool = True,
-                       du_limite: int = 50,
-                       max_vencimentos: int = 8) -> tuple[pd.DataFrame, str, list[str], datetime]:
+                       du_limite: int = 50, max_vencimentos: int = 8,
+                       somente_mensais: bool = False) -> tuple[pd.DataFrame, str, list[str], datetime]:
     """Rotas automáticas em cascata. Devolve (df, rota, log, coletado_em).
 
     As linhas do endpoint não carregam o vencimento — semanais e mensais dividem a
@@ -812,18 +821,23 @@ def extrair_automatico(ativo: str, usar_selenium: bool = True, headless: bool = 
     try:
         inicio = time.time()
         vencimentos = vencimentos_do_site(ativo)
-        # Os mensais vêm primeiro: com 50 DU cabem o vencimento curto e o seguinte,
-        # e as semanais só completam o lote (servem a quem desliga o filtro de série).
+        # Com 50 DU cabem o mensal curto e os dois seguintes. Eles são buscados antes das
+        # semanais, que só servem a quem desliga o filtro de série: o site recusa (429) depois de
+        # uns 5 pedidos seguidos, e em 17/09/2026, em ordem de data, as semanais gastaram a cota
+        # antes do 16/10 — o único mensal da janela — e a aba ficou sem vencimento.
         dentro = [v for v in vencimentos if 0 < v["du"] <= du_limite]
         mensais = [v for v in dentro if v["mensal"]][:3]
-        semanais = [v for v in dentro if not v["mensal"]][:max(0, max_vencimentos - len(mensais))]
-        alvos = sorted(mensais + semanais, key=lambda v: v["data"])
+        semanais = [] if somente_mensais else \
+            [v for v in dentro if not v["mensal"]][:max(0, max_vencimentos - len(mensais))]
+        alvos = mensais + semanais
         if not alvos:
             alvos = vencimentos[:3]
         log.append(f"{len(vencimentos)} vencimentos no site; buscando {len(alvos)}")
 
         partes: list[pd.DataFrame] = []
-        for venc in alvos:
+        for i, venc in enumerate(alvos):
+            if i:
+                time.sleep(0.3)          # sem rajada: o site conta pedidos seguidos
             try:
                 parte = _rota_json(ativo, venc["data"])
                 parte["Vencimento"] = venc["data"].strftime("%d/%m/%Y")
@@ -2823,7 +2837,7 @@ def _cartao_aviso(icone: str, titulo: str, texto: str) -> str:
 
 
 def _carregar(fonte: str, ativo: str, arquivo, usar_selenium: bool, headless: bool,
-              hoje: date) -> tuple[dict | None, str | None]:
+              hoje: date, somente_mensais: bool = True) -> tuple[dict | None, str | None]:
     """Busca os dados conforme a fonte. Devolve (estado, erro)."""
     if fonte == "Demo":
         return {"df": grade_demo(ativo, hoje), "fonte": "Demonstração", "demo": True,
@@ -2838,7 +2852,8 @@ def _carregar(fonte: str, ativo: str, arquivo, usar_selenium: bool, headless: bo
             return None, f"Não consegui ler o arquivo: {exc}"
     try:
         with st.spinner(f"Buscando a grade de {ativo} no opcoes.net.br…"):
-            df, rota, log, coletado = extrair_automatico(ativo, usar_selenium, headless)
+            df, rota, log, coletado = extrair_automatico(ativo, usar_selenium, headless,
+                                                         somente_mensais=somente_mensais)
         return {"df": df, "fonte": "opcoes.net.br", "demo": False, "coletado": coletado,
                 "log": log, "rota": rota}, None
     except Exception as exc:
@@ -2948,7 +2963,7 @@ def pagina_opcoes(cabecalho, hoje: date) -> None:
         extrair_automatico.clear()
 
     # ---------------- Carga ---------------------------------------------------
-    estado, erro = _carregar(fonte, ativo, arquivo, usar_selenium, headless, hoje)
+    estado, erro = _carregar(fonte, ativo, arquivo, usar_selenium, headless, hoje, somente_padrao)
     if erro:
         _html(_cabecalho("falha na coleta", None, None, hoje, False), cabecalho)
         _estado_vazio("alerta", "Não consegui buscar os dados",
@@ -3240,44 +3255,50 @@ def cotacao_opcao(ativo: str, ticker: str) -> dict | None:
     return {"fonte": "b3", "ult": o["ult"], "compra": None, "venda": None, "hora": o["hora"], "spot": a["ult"]}
 
 
+DIAS_DO_PROFIT = 120     # dias corridos de candles do Profit na simulação (aquecimento das médias)
+
+
 @cache_dados(ttl=120, show_spinner=False)
-def _candles_profit(ativo: str, minutos: int, dia) -> pd.DataFrame:
-    """Candles do pregão `dia` no cache do próprio Profit (%APPDATA%\\Nelogica\\…): a mesma
-    fonte do gráfico dele, com leilão e after-market. Só os já fechados — o Profit grava o
-    candle quando ele fecha. Fora do PC dele não existe, e volta vazio."""
+def _candles_profit(ativo: str, minutos: int) -> pd.DataFrame:
+    """Candles que o próprio Profit guarda no disco (%APPDATA%\\Nelogica\\…) no tempo gráfico da
+    estratégia: a mesma fonte do gráfico dele, com leilão de fechamento e after-market. Só os
+    já fechados — o Profit grava o candle quando ele fecha. Fora do PC dele não existe, e volta
+    vazio."""
     try:
         import resultados
         d = resultados.candles(ativo, minutos)
     except Exception:
         return pd.DataFrame()
-    return d[d.index.date == dia]
+    return d[d.index >= pd.Timestamp.now(tz=BRT).normalize() - pd.Timedelta(days=DIAS_DO_PROFIT)]
 
 
 def barras_estrategia(ativo: str) -> pd.DataFrame:
-    """Histórico longo mais o pregão de agora, o mais parecido possível com o gráfico do
-    Profit. As estratégias carregam posição de um dia para o outro, então a simulação
-    precisa começar bem antes da operação aberta.
+    """Histórico mais o pregão de agora, igual ao gráfico do Profit. As estratégias carregam
+    posição de um dia para o outro, então a simulação começa bem antes da operação aberta.
 
-    Todo pregão que o coletor RTD gravou (o de hoje inclusive) vem dele — com os leilões e o
-    after-market, como no Profit; o resto vem do Yahoo. O ajuste por proventos fica por
-    último, porque o RTD grava o preço negociado, sem ajuste."""
-    partes = [p for p in (_barras_historico(ativo), _barras_recentes(ativo)) if len(p)]
-    if not partes:
-        return pd.DataFrame()
-    barras = pd.concat(partes)
-    barras = barras[~barras.index.duplicated(keep="last")].sort_index()
+    - pregões passados: os candles do próprio Profit, quando o cache dele existe (sem after-market
+      e leilão, como no Yahoo, as médias e os sinais divergem);
+    - sem o cache (nuvem, gráfico nunca aberto no Profit): Yahoo, com os pregões que o coletor RTD
+      gravou por cima;
+    - hoje: os candles que o Profit já fechou e gravou; o candle em formação sai do coletor RTD
+      (tick a tick) e, onde ele não gravou, do Yahoo.
+    O ajuste por proventos fica por último: Profit, RTD e Yahoo intradiário trazem o preço
+    negociado, sem ajuste."""
     hoje = datetime.now(BRT).date()
+    est = ope.ESTRATEGIAS.get(ativo)
+    partes = [p for p in (_barras_historico(ativo), _barras_recentes(ativo)) if len(p)]
+    barras = pd.concat(partes) if partes else pd.DataFrame()
     if len(barras):
+        barras = barras[~barras.index.duplicated(keep="last")].sort_index()
         for dia in ope.dias_rtd(PASTA_RT):
             if barras.index[0].date() <= dia < hoje:
                 barras = ope.juntar_barras(barras, _barras_rtd_passado(ativo, dia))
     rtd_hoje = ope.barras_rtd(ativo, PASTA_RT, hoje)
-    barras = ope.juntar_barras(barras, rtd_hoje)
-    est = ope.ESTRATEGIAS.get(ativo)
+    barras = ope.juntar_barras(barras, rtd_hoje) if len(barras) else rtd_hoje
     if est is not None:
-        # o que o coletor não gravou hoje — Profit mudo, leilão, after-market — sai do cache dele
-        barras = ope.completar_com_profit(barras, _candles_profit(ativo, est.minutos, hoje),
-                                          est.minutos, rtd_hoje)
+        barras = ope.usar_candles_do_profit(barras, _candles_profit(ativo, est.minutos), est.minutos, hoje)
+    if barras.empty:
+        return barras
     try:
         return ope.ajustar_proventos(barras, _proventos(ativo), ativo)
     except Exception:
@@ -3562,7 +3583,8 @@ def precos_opcao(ativo: str, est, op, preco: float, info: dict) -> dict:
     else:
         nota_sinal = ""
     partes = [f"agora {_moeda(agora)} ({FONTES_OPCAO[fonte]})"]
-    partes += [f"{n.lower()} ~{_moeda(v)}" for n, v, _ in niveis[1:] if v is not None]
+    partes += [f"{n.lower()} ~{_moeda(v)}" for n, v, _ in niveis
+               if n not in ("No sinal", "Agora") and v is not None]
     resumo = (f"Comprar {tipo} {ticker} · strike {_moeda(k)} · vence {info['venc']:%d/%m} ({du} DU)\n"
               + " · ".join(partes))
     return {"ticker": ticker, "tipo": tipo, "strike": k, "iv": iv, "fonte": fonte, "cot": cot,

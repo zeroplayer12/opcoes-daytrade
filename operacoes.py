@@ -948,25 +948,53 @@ def inicio_do_candle(idx: pd.DatetimeIndex, minutos: int) -> pd.DatetimeIndex:
     return idx.normalize() + pd.to_timedelta(base + (efetivo - base) // minutos * minutos, unit="min")
 
 
+COLUNAS_OHLCV = ["open", "high", "low", "close", "volume"]
+
+
+def usar_candles_do_profit(barras: pd.DataFrame, profit: pd.DataFrame, minutos: int, hoje,
+                           agora: datetime | None = None) -> pd.DataFrame:
+    """Candles do Profit no lugar dos montados aqui: pregões passados inteiros e, hoje, todo candle
+    que ele já fechou e gravou. O RTD fica com o candle em formação.
+
+    O Yahoo não tem after-market nem o leilão de fechamento, e o volume dele não é o do Profit —
+    as estratégias de pullback exigem volume acima da média de 20 candles. Com qualquer um desses
+    diferente, o sinal não sai igual ao do Profit: a venda do BOVA11 de 17/09/2026 sumiu do painel
+    primeiro pelo after-market dos dias anteriores e depois pelo volume do candle das 10:00, que
+    veio do Yahoo enquanto o RTD estava mudo. Dia que o cache do Profit não tem fica como estava.
+    """
+    if profit is None or profit.empty:
+        return barras
+    datas = np.asarray(profit.index.date)
+    passado = profit[datas < hoje].reindex(columns=COLUNAS_OHLCV)
+    do_dia = profit[datas == hoje]
+    if len(barras) and len(passado):
+        dias = set(passado.index.date)
+        barras = pd.concat([barras[[d not in dias for d in barras.index.date]], passado]).sort_index()
+    elif len(passado):
+        barras = passado
+    if barras.empty:
+        return do_dia.reindex(columns=COLUNAS_OHLCV)
+    return completar_com_profit(barras, do_dia, minutos, agora)
+
+
 def completar_com_profit(barras: pd.DataFrame, profit: pd.DataFrame, minutos: int,
-                         rtd: pd.DataFrame | None = None) -> pd.DataFrame:
-    """Tapa o que falta com os candles que o próprio Profit guarda no disco.
+                         agora: datetime | None = None) -> pd.DataFrame:
+    """Candles de hoje que o Profit já fechou entram no lugar dos montados com RTD e Yahoo.
 
     `profit` vem no tempo gráfico da estratégia e entra como uma barra única no início de cada
-    período — o agrupamento devolve o mesmo candle. O que o coletor gravou continua vindo dele
-    (tick a tick, com o candle em formação); o resto, que no Yahoo sai pior ou nem existe
-    (after-market, leilão), passa a sair igual ao gráfico do Profit.
+    período — o agrupamento devolve o mesmo candle. Só os fechados (início + período ≤ agora): o
+    candle em formação continua saindo do coletor, tick a tick.
     """
     if profit is None or profit.empty or barras.empty:
         return barras
-    gravados = set(inicio_do_candle(rtd.index, minutos)) if rtd is not None and not rtd.empty else set()
-    novos = profit[[t not in gravados for t in inicio_do_candle(profit.index, minutos)]]
+    agora = agora or datetime.now(BRT)
+    passo = pd.Timedelta(minutes=minutos)
+    novos = profit[[t + passo <= agora for t in inicio_do_candle(profit.index, minutos)]]
     if novos.empty:
         return barras
     trocados = set(inicio_do_candle(novos.index, minutos))
     manter = [t not in trocados for t in inicio_do_candle(barras.index, minutos)]
-    return pd.concat([barras[manter],
-                      novos.reindex(columns=["open", "high", "low", "close", "volume"])]).sort_index()
+    return pd.concat([barras[manter], novos.reindex(columns=COLUNAS_OHLCV)]).sort_index()
 
 
 def candles_de_5min(barras_5m: pd.DataFrame, minutos: int) -> pd.DataFrame:
