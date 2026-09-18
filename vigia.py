@@ -155,10 +155,49 @@ class Vigia:
                 return f"\nParcial: metade da posição na {nome}."
         return ""
 
+    def _cotacao_do_profit(self, agora: datetime) -> None:
+        """Avisa quando o Profit para de mandar cotação no pregão — o painel passa a usar o Yahoo e o
+        cache, e os sinais podem divergir do gráfico — e avisa de novo quando ela volta."""
+        if not ("10:05" <= f"{agora:%H:%M}" <= "17:05"):
+            return
+        ultima = self.app._ultima_cotacao_rtd()
+        parado = self.estado.get("rtd_parado")
+        if ultima is None:
+            if f"{agora:%H:%M}" >= "10:15" and not parado:
+                self.estado["rtd_parado"] = f"{agora:%Y-%m-%dT%H:%M}"
+                self._salva()
+                avisos.enviar("Profit sem cotação hoje",
+                              "O coletor não gravou nenhum negócio neste pregão. Confira se o Profit está "
+                              "aberto e conectado; o painel está usando o Yahoo, com 15 min de atraso.",
+                              self.cfg)
+                log("aviso: Profit sem cotação hoje")
+            return
+        minutos = (agora - ultima).total_seconds() / 60
+        if minutos >= 10 and not parado:
+            self.estado["rtd_parado"] = ultima.isoformat(timespec="minutes")
+            self._salva()
+            avisos.enviar(f"Profit sem cotação há {minutos:.0f} min",
+                          f"Último negócio às {ultima:%H:%M}. O painel passou a usar o Yahoo (15 min de "
+                          f"atraso) e os candles gravados do Profit; os sinais do pregão podem divergir "
+                          f"do gráfico até a cotação voltar.", self.cfg)
+            log(f"aviso: Profit sem cotação há {minutos:.0f} min (último negócio {ultima:%H:%M})")
+        elif minutos < 3 and parado:
+            self.estado.pop("rtd_parado", None)
+            self._salva()
+            avisos.enviar("Profit voltou a mandar cotação",
+                          f"Ficou parado desde {parado[-5:]}; agora o painel está em tempo real de novo.",
+                          self.cfg)
+            log("aviso: Profit voltou a mandar cotação")
+
     def ciclo(self, enviar: bool = True) -> list[dict]:
         agora = datetime.now(self.app.BRT)
         hoje = f"{agora:%Y-%m-%d}"
         feitos = []
+        if enviar:
+            try:
+                self._cotacao_do_profit(agora)
+            except Exception as exc:
+                log(f"aviso de cotação parada falhou: {type(exc).__name__}: {exc}")
         for ev, est, res, preco in self._eventos(agora):
             if enviar and ev["chave"] in self.estado["vistos"]:
                 continue

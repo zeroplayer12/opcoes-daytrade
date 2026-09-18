@@ -2897,6 +2897,7 @@ def main() -> None:
                        initial_sidebar_state="auto")
     st.markdown(_CSS, unsafe_allow_html=True)
     _manter_estado()
+    _garante_servicos()
     cabecalho = st.empty()
     rotulos = [":material/candlestick_chart: Opções", ":material/public: Correlações",
                ":material/monitoring: Operações", ":material/receipt_long: Realizadas"]
@@ -3171,7 +3172,10 @@ def _barras_historico(ativo: str) -> pd.DataFrame:
     """60 dias de barras de 5 min (o máximo do Yahoo) com o candle do leilão de
     fechamento recriado, renovadas de hora em hora. Sem ajuste por proventos: ele vem
     no fim, depois de entrarem os pregões do RTD."""
-    barras = ope.barras_5min(ativo, "60d")
+    try:
+        barras = ope.barras_5min(ativo, "60d")
+    except Exception:
+        return pd.DataFrame()      # Yahoo fora do ar: o cache do Profit cobre o histórico
     try:
         return ope.com_leilao_fechamento(barras, ope.barras_diarias(ativo))
     except Exception:
@@ -4131,6 +4135,31 @@ def _motivo(e, op) -> str:
     return e.rotulo
 
 
+def _iv_recente(ativo: str, diario: dict, candles: pd.DataFrame) -> float | None:
+    """Volatilidade implícita de uma opção recente do ativo, pela cotação de agora (RTD, B3 ou site).
+
+    É a referência para as operações antigas, em que não há preço gravado da opção: a volatilidade
+    histórica da ação fica bem abaixo da implícita e faz a opção parecer mais barata — e o resultado
+    em % dela, maior do que foi."""
+    recentes = sorted((v for k, v in diario.items() if k.startswith(f"{ativo}|") and v.get("ticker")),
+                      key=lambda v: v.get("anotado", ""), reverse=True)[:3]
+    if not recentes:
+        return None
+    spot, agora = float(candles["close"].iloc[-1]), candles.index[-1]
+    for v in recentes:
+        cot = cotacao_opcao(ativo, v["ticker"])
+        if not cot:
+            continue
+        c_, v_ = cot.get("compra"), cot.get("venda")
+        mercado = (c_ + v_) / 2 if c_ and v_ and 0 < c_ <= v_ else cot.get("ult")
+        prazo = max(dias_uteis(agora.date(), date.fromisoformat(v["venc"])), 0) / 252.0
+        iv = volatilidade_implicita(mercado, cot.get("spot") or spot, float(v["strike"]), prazo,
+                                    TAXA_PADRAO, v["tipo"])
+        if iv:
+            return iv
+    return None
+
+
 def _resultado_na_opcao(ativo: str, est, op, candles: pd.DataFrame, diario: dict) -> dict:
     """Resultado de comprar a opção no sinal (call na compra, put na venda) e vender nas saídas da
     estratégia, na mesma proporção delas.
@@ -4142,7 +4171,7 @@ def _resultado_na_opcao(ativo: str, est, op, candles: pd.DataFrame, diario: dict
     ent = op.entrada
     dia = ent.hora.date()
     anotada = diario.get(f"{ativo}|{op.hora_sinal:%Y%m%d%H%M}")
-    sigma = _vol_historica(candles, ent.hora)
+    sigma = None
     if anotada:
         ticker, tipo = anotada["ticker"], anotada["tipo"]
         strike, venc = float(anotada["strike"]), date.fromisoformat(anotada["venc"])
@@ -4152,6 +4181,7 @@ def _resultado_na_opcao(ativo: str, est, op, candles: pd.DataFrame, diario: dict
         venc = next((v for v in calendario_vencimentos(dia) if dias_uteis(dia, v) >= minimo), None)
         if venc is None:
             return {}
+        sigma = _vol_historica(candles, ent.hora)
         t = dias_uteis(dia, venc) / 252.0
         d1 = D1_DELTA_55 if tipo == "CALL" else -D1_DELTA_55
         strike = ent.preco * math.exp(-d1 * sigma * math.sqrt(t) + (TAXA_PADRAO + sigma ** 2 / 2) * t)
@@ -4159,11 +4189,49 @@ def _resultado_na_opcao(ativo: str, est, op, candles: pd.DataFrame, diario: dict
     def prazo(quando):
         return max(dias_uteis(quando.date(), venc), 0) / 252.0
 
+    def implicita(preco_opcao, acao, quando):
+        if not preco_opcao or preco_opcao <= 0 or not acao:
+            return None
+        return volatilidade_implicita(float(preco_opcao), float(acao), strike, prazo(quando),
+                                      TAXA_PADRAO, tipo)
+
+    saidas = [(e, _momento(ativo, est.minutos, e)) for e in op.execucoes if e.rotulo != "entrada"]
+    gravado_entrada = _preco_gravado(ticker, ent.hora)
+    gravados = [(e, quando, _preco_gravado(ticker, quando)) for e, quando in saidas]
+
+    # A volatilidade das pontas estimadas tem de ser a da PRÓPRIA OPÇÃO: a implícita do preço que o
+    # coletor gravou (em qualquer ponta) ou, sem nenhum, a da cotação de hoje dela. A histórica da
+    # ação só entra quando não há opção nenhuma para consultar — ela fica bem abaixo da implícita, e
+    # misturada com um preço real dá resultado sem sentido (BOVAV37 em 17/09/2026: entrada estimada
+    # em R$ 4,97 contra R$ 7,0 do book, e a operação virou +20,7% quando foi prejuízo).
+    fonte_vol = "implícita do preço gravado"
+    sigma_novo = implicita(gravado_entrada, ent.preco, ent.hora)
+    if sigma_novo is None:
+        for e, quando, preco in gravados:
+            sigma_novo = implicita(preco, e.preco, quando or e.hora)
+            if sigma_novo is not None:
+                break
+    if sigma_novo is None and ticker:
+        cot = cotacao_opcao(ativo, ticker)
+        if cot:
+            c_, v_ = cot.get("compra"), cot.get("venda")
+            mercado = (c_ + v_) / 2 if c_ and v_ and 0 < c_ <= v_ else cot.get("ult")
+            agora = candles.index[-1]
+            sigma_novo = implicita(mercado, cot.get("spot") or candles["close"].iloc[-1], agora)
+            if sigma_novo is not None:
+                fonte_vol = "implícita da cotação de hoje"
+    if sigma_novo is None:
+        sigma_novo = _iv_recente(ativo, diario, candles)
+        if sigma_novo is not None:
+            fonte_vol = "implícita de uma opção recente do ativo"
+    if sigma_novo is None:
+        sigma_novo, fonte_vol = sigma if sigma is not None else _vol_historica(candles, ent.hora), \
+            "histórica da ação"
+    sigma = sigma_novo
+
     fontes = []
-    p_ent = _preco_gravado(ticker, ent.hora)
-    if p_ent:
-        iv = volatilidade_implicita(p_ent, ent.preco, strike, prazo(ent.hora), TAXA_PADRAO, tipo)
-        sigma = iv or sigma
+    if gravado_entrada:
+        p_ent = gravado_entrada
         fontes.append("gravado")
     else:
         p_ent = _black_scholes(float(ent.preco), strike, prazo(ent.hora), sigma, TAXA_PADRAO, tipo)[0]
@@ -4172,26 +4240,23 @@ def _resultado_na_opcao(ativo: str, est, op, candles: pd.DataFrame, diario: dict
         return {}
     total = abs(ent.qtd)
     pct = media = peso = 0.0
-    for e in op.execucoes:
-        if e.rotulo == "entrada":
-            continue
+    for e, quando, preco in gravados:
         frac = abs(e.qtd) / total
-        quando = _momento(ativo, est.minutos, e)
-        p = _preco_gravado(ticker, quando)
-        if p:
+        if preco:
             fontes.append("gravado")
         else:
-            p = _black_scholes(float(e.preco), strike, prazo(quando or e.hora), sigma, TAXA_PADRAO, tipo)[0]
+            preco = _black_scholes(float(e.preco), strike, prazo(quando or e.hora), sigma, TAXA_PADRAO, tipo)[0]
             fontes.append("estimado")
-        pct += frac * (p / p_ent - 1) * 100
-        media, peso = media + frac * p, peso + frac
+        pct += frac * (preco / p_ent - 1) * 100
+        media, peso = media + frac * preco, peso + frac
     fonte = fontes[0] if len(set(fontes)) == 1 else "misto"
     return {"ticker": ticker, "tipo": tipo, "strike": strike, "venc": venc, "entrada": p_ent,
-            "saida": media / peso if peso else None, "pct": pct, "fonte": fonte}
+            "saida": media / peso if peso else None, "pct": pct, "fonte": fonte,
+            "vol": sigma * 100 if sigma else None, "fonte_vol": fonte_vol}
 
 
 @cache_dados(ttl=60, show_spinner=False)
-def _operacoes_realizadas(dias: int) -> list[dict]:
+def _operacoes_realizadas(dias: int) -> dict:
     """Operações encerradas nos últimos `dias` (pela saída), dos ativos operados, com o resultado
     na ação e na opção. Mesma simulação e mesmos candles da aba Operações."""
     try:
@@ -4199,14 +4264,15 @@ def _operacoes_realizadas(dias: int) -> list[dict]:
     except (OSError, ValueError):
         diario = {}
     desde = pd.Timestamp.now(tz=BRT).normalize() - pd.Timedelta(days=dias)
-    linhas = []
+    linhas, falhas = [], {}
     for ativo in ATIVOS_OPERADOS:
         est = ope.ESTRATEGIAS.get(ativo)
         if est is None:
             continue
         try:
             res, _ = ope.situacao(est, barras_estrategia(ativo))
-        except Exception:
+        except Exception as exc:
+            falhas[ativo] = str(exc)
             continue
         for op in res.operacoes:
             if op.aberta or op.entrada is None or op.execucoes[-1].hora < desde:
@@ -4221,7 +4287,7 @@ def _operacoes_realizadas(dias: int) -> list[dict]:
                 "entrada": (op.entrada.hora, op.entrada.preco),
                 "saidas": [(_motivo(e, op), e.hora, e.preco, abs(e.qtd) / abs(op.entrada.qtd)) for e in saidas],
                 "acao": _pct_resultado(op), "opcao": opcao})
-    return sorted(linhas, key=lambda l: l["saidas"][-1][1], reverse=True)
+    return {"linhas": sorted(linhas, key=lambda l: l["saidas"][-1][1], reverse=True), "falhas": falhas}
 
 
 def pagina_realizadas(cabecalho) -> None:
@@ -4241,7 +4307,12 @@ def pagina_realizadas(cabecalho) -> None:
         filtro = st.segmented_control("Ativo", ["Todos"] + ATIVOS_OPERADOS, key="real_ativo", required=True,
                                       default="Todos") or "Todos"
     with st.spinner("Recalculando as operações…"):
-        linhas = _operacoes_realizadas(int(dias))
+        calculado = _operacoes_realizadas(int(dias))
+    linhas, falhas = calculado["linhas"], calculado["falhas"]
+    if falhas:
+        _html(f'<div class="dx"><div class="opc-lim">{_ic("alerta")}<span>Sem os candles de '
+              f'<b>{", ".join(falhas)}</b> agora ({_esc(list(falhas.values())[0])}): as operações desses '
+              f"ativos ficaram de fora.</span></div></div>")
     if filtro != "Todos":
         linhas = [l for l in linhas if l["ativo"] == filtro]
     if not linhas:
@@ -4280,8 +4351,11 @@ def pagina_realizadas(cabecalho) -> None:
         if o:
             nome = o["ticker"] or f"{o['tipo'].lower()} {_num(o['strike'], 2)} (equivalente)"
             opcao_txt = f"{_esc(nome)}<small>vence {o['venc']:%d/%m}</small>"
+            rotulo = {"gravado": "gravado", "estimado": "estimado"}.get(o["fonte"], "parte gravado")
+            dica = (f"{rotulo}; ponta estimada por Black-Scholes com volatilidade {o.get('fonte_vol', '—')}"
+                    f" de {_num(o.get('vol'), 0, sufixo='%')}" if o["fonte"] != "gravado" else "os dois preços gravados pelo coletor")
             precos = (f"{_num(o['entrada'], 2)} → {_num(o['saida'], 2)}"
-                      f"<small>{'gravado' if o['fonte'] == 'gravado' else 'estimado' if o['fonte'] == 'estimado' else 'parte gravado'}</small>")
+                      f"<small title=\"{_escape(dica)}\">{rotulo}</small>")
             opcao_pct = f'<td class="num {tom(o["pct"])}">{pc(o["pct"], 1)}</td>'
         else:
             opcao_txt, precos, opcao_pct = "—", "—", '<td class="mut">—</td>'
@@ -4322,7 +4396,6 @@ def pagina_operacoes(cabecalho) -> None:
                    "balão com som nesta página (com a atualização automática ligada) e, pelo vigia.py, "
                    "notificação no Windows e no Telegram — mesmo com o navegador fechado.")
         testar = st.button("Testar avisos", icon=":material/notifications:", key="testar_avisos", **_LARGURA)
-    _garante_servicos()
     estado, hora = _estado_rtd()
     if estado == "vivo":
         fonte = '<span class="pill"><span class="dot"></span><b>Profit</b> · tempo real</span>'

@@ -455,6 +455,14 @@ gráfico de candles do pregão com as linhas da operação. Abre direto em
     no painel ou no vigia (é a sugerida no sinal, a que ele compra). Operações de antes do diário
     usam uma equivalente pelas regras: vencimento mensal que cobre o tempo típico + folga e strike
     de |Δ| 0,55 na entrada, marcada "(equivalente)".
+  - **Qual volatilidade (corrigido em 17/09/2026):** a da **própria opção** — a implícita do preço que
+    o coletor gravou em qualquer ponta, ou a da cotação de hoje dela, ou a de uma opção recente do
+    mesmo ativo (`_iv_recente`). A histórica da ação só entra quando não há opção nenhuma para
+    consultar: ela fica bem abaixo da implícita e, misturada com um preço real, dá resultado sem
+    sentido. Foi o que aconteceu com a BOVAV37 de 17/09 — entrada estimada em R$ 4,97 com vol. de 19%
+    contra R$ 7,0 do book, saída gravada de R$ 6,00, e a operação apareceu como +20,7% quando foi
+    −14,1%. A célula da opção mostra "gravado", "parte gravado" ou "estimado", e a dica do mouse diz
+    de onde veio a volatilidade.
   - **Qual preço:** o que o coletor gravou da opção no instante da execução — abertura do candle
     para entrada e stop; para alvo e parcial, o primeiro negócio gravado da ação que chegou no
     preço da ordem. Sem gravação, Black-Scholes com a ação no preço da execução e a volatilidade
@@ -474,6 +482,16 @@ gráfico de candles do pregão com as linhas da operação. Abre direto em
   Conferido nos cinco ativos operados: candles fechados desde 11/09 idênticos aos do Profit e as
   posições abertas iguais às da simulação só com os candles dele. A entrada da PETR4 passou de
   48,03 (abertura de 17/09) para 48,69 (after-market das 17:30 de 16/09), como no Profit.
+- **Sem o Yahoo o painel continua de pé (17/09/2026):** o `query1.finance.yahoo.com` passou a recusar
+  e a estourar o tempo de resposta, e como `_barras_historico` não tratava o erro, o ativo inteiro
+  ficava sem candles: cartões em "sem dados" e ativos sumindo da aba Realizadas (a VALE3 tinha 15
+  operações fora da lista). Agora a falha do Yahoo volta um histórico vazio e o cache do Profit
+  (120 dias) sustenta a simulação sozinho; a aba Realizadas avisa quais ativos ficaram de fora.
+- **Aviso de Profit sem cotação (17/09/2026):** no pregão, se passar de 10 min sem negócio novo no
+  RTD, o vigia avisa (Windows e Telegram) que o painel passou a usar o Yahoo e o cache, e avisa de
+  novo quando a cotação volta. O estado fica em `dados_rt/vigia_estado.json` (`rtd_parado`), então
+  reiniciar o vigia não repete o aviso. A checagem que mantém coletor e vigia de pé saiu da aba
+  Operações e foi para o `main()`: qualquer aba aberta segura os dois.
 - **Sinais durante o pregão (17/09/2026):** o painel mostrou compras da BPAC11 às 11:45 e às 12:15 que
   o Profit não deu. O que se descobriu:
   - o **cache de candles do Profit não é gravado durante o pregão**: ele escreve o arquivo `.min` quando
