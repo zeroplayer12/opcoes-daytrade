@@ -25,8 +25,8 @@ import pandas as pd
 
 RAIZ = pathlib.Path(__file__).resolve().parent
 CONFIG = pathlib.Path(os.environ.get("LOCALAPPDATA") or RAIZ) / "PainelDayTrade" / "avisos.json"
-# as 5 da carteira recomendada (15/09/2026); a BBAS3 continua no painel, sem aviso
-PADRAO = {"ativos": ["VALE3", "PETR4", "BPAC11", "ITUB4", "BOVA11"], "windows": True,
+# a carteira operada (18/09/2026): BPAC11 e BOVA11 pausadas, como a BBAS3 (ver app.PAUSADOS)
+PADRAO = {"ativos": ["VALE3", "PETR4", "ITUB4"], "windows": True,
           "telegram": {"token": "", "chat_id": ""}}
 APP_ID = r"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe"
 

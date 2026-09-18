@@ -419,8 +419,13 @@ gráfico de candles do pregão com as linhas da operação. Abre direto em
   implícita com que estima a parcial, o alvo e o stop. Sem o coletor (ou na nuvem), a
   cotação vem do site da B3 (`InstrumentQuotation`, ~15 min de atraso, com a ação do mesmo
   instante); sem as duas, do opcoes.net.br.
-- **Avisos (15/09/2026):** sinal, parcial, zero a zero, stop tocado e saída das 5 estratégias
-  recomendadas (VALE3, PETR4, BPAC11, ITUB4 e BOVA11) avisam em três lugares:
+- **Carteira operada (18/09/2026): VALE3, PETR4 e ITUB4.** BPAC11 e BOVA11 foram pausadas como a
+  BBAS3 (`PAUSADOS` no `app.py` e `avisos.PADRAO`): no backtest do Profit desde 2018 elas não se
+  sustentaram depois do custo e perderam dinheiro na opção. Saem das abas Opções, Operações e
+  Realizadas, dos avisos e do resultado mês a mês; continuam nas Correlações, como contexto. O
+  código delas fica em `operacoes.py`, para voltar a operar é só tirá-las das duas listas.
+- **Avisos (15/09/2026):** sinal, parcial, zero a zero, stop tocado e saída das estratégias
+  operadas (hoje VALE3, PETR4 e ITUB4) avisam em três lugares:
   - **no navegador:** balão na aba Operações, três bipes e o título da aba piscando, com a
     atualização automática ligada (chega em até 1 min) e a faixa "Avisos de hoje" acima dos
     cartões;
@@ -439,14 +444,14 @@ gráfico de candles do pregão com as linhas da operação. Abre direto em
   Windows sai pelo PowerShell (aparece como "Windows PowerShell") e o *Assistente de foco* /
   *Não perturbe* do Windows pode segurá-la.
 - **Resultado mês a mês (15/09/2026):** a seção no fim da aba mostra, mês a mês desde 2022, quanto
-  as 5 estratégias recomendadas teriam dado — calendário por ano, total da carteira ou de uma
+  as estratégias operadas teriam dado — calendário por ano, total da carteira ou de uma
   estratégia, e a tabela com todas elas num expander. Vem do `resultados.py`: o motor do painel
   rodando sobre os candles que o próprio Profit guarda no disco
   (`%APPDATA%\Nelogica\Profit_Profit-cm\database`, arquivos `.min` de 128 bytes por candle, preço
   bruto, ajustado aqui por desdobramentos e proventos), 200 ações, sem custos. O vigia refaz a
   conta todo dia depois das 18:40 (~30 s); à mão, `python resultados.py`. É resultado em ações:
   com a opção, o ganho acompanha o delta e a opção perde valor com o tempo.
-- **Aba Realizadas (17/09/2026):** as operações encerradas das 5 estratégias em 7, 30 ou 90 dias
+- **Aba Realizadas (17/09/2026):** as operações encerradas das estratégias operadas em 7, 30 ou 90 dias
   (`?aba=realizadas`), para conferir contra a lista de operações do Profit: sinal, entrada, saída
   com o motivo (alvo, stop, zero a zero, parcial com a fração), o resultado **na ação** (% sobre a
   entrada) e o resultado **na opção** — compra no sinal (call na compra, put na venda) e venda nas

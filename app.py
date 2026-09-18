@@ -61,9 +61,12 @@ except ImportError:  # pragma: no cover
 # =============================================================================
 
 ATIVOS: list[str] = ["BOVA11", "PETR4", "VALE3", "BBAS3", "ITUB4", "BPAC11"]
-# a BBAS3 saiu da carteira recomendada (15/09/2026) e não vira mais cartão nas abas Opções e
-# Operações; nas correlações ela continua, que ali serve de contexto do pregão
-ATIVOS_OPERADOS: list[str] = [a for a in ATIVOS if a != "BBAS3"]
+# fora da carteira operada — sem cartão nas abas Opções, Operações e Realizadas, sem aviso e fora do
+# resultado mensal; nas correlações continuam, que ali servem de contexto do pregão:
+# BBAS3 desde 15/09/2026; BPAC11 e BOVA11 desde 18/09/2026 (no backtest do Profit desde 2018 não se
+# sustentaram depois do custo). Para voltar a operar, é só tirar daqui e de avisos.PADRAO.
+PAUSADOS = {"BBAS3", "BPAC11", "BOVA11"}
+ATIVOS_OPERADOS: list[str] = [a for a in ATIVOS if a not in PAUSADOS]
 
 DELTA_MIN_PADRAO, DELTA_MAX_PADRAO = 0.50, 0.70   # regra obrigatória
 DU_MIN_PADRAO, DU_MAX_PADRAO = 2, 20              # janela de dias úteis
@@ -4392,7 +4395,7 @@ def pagina_operacoes(cabecalho) -> None:
                    "sozinho) ou da B3, com 15 min de atraso; alvo e stop são estimados com a volatilidade "
                    "implícita desse preço.")
         _sb("Avisos")
-        st.caption("Sinal, parcial, zero a zero, stop tocado e saída de VALE3, PETR4, BPAC11, ITUB4 e BOVA11: "
+        st.caption("Sinal, parcial, zero a zero, stop tocado e saída de VALE3, PETR4 e ITUB4: "
                    "balão com som nesta página (com a atualização automática ligada) e, pelo vigia.py, "
                    "notificação no Windows e no Telegram — mesmo com o navegador fechado.")
         testar = st.button("Testar avisos", icon=":material/notifications:", key="testar_avisos", **_LARGURA)

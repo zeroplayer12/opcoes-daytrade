@@ -31,7 +31,7 @@ import operacoes as ope
 RAIZ = pathlib.Path(__file__).resolve().parent
 ARQ = RAIZ / "dados_rt" / "resultados.json"
 DB = pathlib.Path(os.environ.get("APPDATA", "")) / "Nelogica" / "Profit_Profit-cm" / "database"
-ATIVOS = ["VALE3", "PETR4", "BPAC11", "ITUB4", "BOVA11"]      # carteira recomendada (15/09/2026)
+ATIVOS = ["VALE3", "PETR4", "ITUB4"]      # carteira operada (18/09/2026: BPAC11 e BOVA11 pausadas)
 INICIO = pd.Timestamp("2022-01-01", tz=ope.BRT)
 AQUECE = pd.Timestamp("2021-06-01", tz=ope.BRT)                  # indicadores prontos em janeiro/2022
 REG = 128                                                        # bytes por candle no .min
