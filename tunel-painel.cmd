@@ -21,7 +21,8 @@ if not exist "%USERPROFILE%\.cloudflared\config.yml" (
 rem Log com rotacao simples: acima de 5 MB vira tunnel.old.log
 if exist tunnel.log for %%A in (tunnel.log) do if %%~zA GTR 5000000 move /y tunnel.log tunnel.old.log >nul
 echo [%date% %time%] iniciando o tunel painel-daytrade>> tunnel.log
-cloudflared.exe --config "%USERPROFILE%\.cloudflared\config.yml" --no-autoupdate tunnel run painel-daytrade >> tunnel.log 2>&1
+rem Caminho completo: o Windows daqui nao procura executavel na pasta atual.
+"%~dp0cloudflared.exe" --config "%USERPROFILE%\.cloudflared\config.yml" --no-autoupdate tunnel run painel-daytrade >> tunnel.log 2>&1
 echo [%date% %time%] o tunel encerrou; nova tentativa em 30 s>> tunnel.log
 ping -n 31 127.0.0.1 >nul
 goto laco
