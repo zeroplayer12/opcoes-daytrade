@@ -1,13 +1,49 @@
 # Deploy
 
-Três caminhos, em ordem de recomendação.
+Quatro caminhos, em ordem de recomendação.
 
 ---
 
-## 1. Streamlit Community Cloud — permanente, gratuito, tudo funciona
+## 1. Domínio próprio — `painel.quantunlab.com.br`, com senha
+
+O painel do seu PC servido em `https://painel.quantunlab.com.br`, protegido por
+login. É o caminho definitivo: URL fixa, HTTPS, abre no celular de qualquer lugar
+e usa os dados do Profit, que só existem nesta máquina.
+
+**Como funciona.** O Streamlit continua ouvindo só em `127.0.0.1:8501` — nada é
+aberto no roteador. Um túnel da Cloudflare (`cloudflared`) sai daqui para a borda
+deles e recebe as visitas de volta. O `quantunlab.com.br` já está com os
+nameservers da Cloudflare (`brenda`/`chris`, trocados na HostGator em 22/09/2026),
+então o subdomínio nasce por comando, sem mexer no site que está na Vercel.
+
+**Para publicar:** duplo clique em [`publicar-painel.cmd`](publicar-painel.cmd).
+Ele faz o que falta e pula o que já está feito:
+
+1. pede a **senha do painel** — você digita, só o hash vai para o disco;
+2. abre o navegador na **autorização da Cloudflare**: escolha `quantunlab.com.br`
+   e clique em **Authorize** (essa é a única parte que preciso de você);
+3. cria o túnel `painel-daytrade`;
+4. escreve `%USERPROFILE%\.cloudflared\config.yml`;
+5. cria o DNS de `painel.quantunlab.com.br`;
+6. deixa o túnel subindo junto com o Windows — `Tunel do Painel.vbs` na pasta
+   Inicializar, chamando [`tunel-painel.cmd`](tunel-painel.cmd) — e testa a URL.
+
+**A senha.** `python configurar_senha.py` troca, `--tirar` remove. O hash
+(PBKDF2-SHA256, 200 mil rodadas, com salt) fica em
+`%LOCALAPPDATA%\PainelDayTrade\acesso.json`, fora do OneDrive e do Git. Sem esse
+arquivo o painel abre direto, como sempre abriu aqui — por isso o
+`publicar-painel.cmd` se recusa a seguir sem senha.
+
+**Limites honestos:** depende do PC ligado, com o painel na porta 8501
+(o `iniciar-painel.cmd` já sobe no logon) e com internet. PC dormindo, a URL
+responde 502 até ele voltar. O túnel se reconecta sozinho; o log é o `tunnel.log`.
+
+---
+
+## 2. Streamlit Community Cloud — permanente, gratuito, tudo funciona
 
 Não depende do seu PC e **a rota "Buscar no site" funciona** (ao contrário do
-build da Vercel — veja a seção 3). Mas **não é 24/7**: dorme por inatividade, veja
+build da Vercel — veja a seção 4). Mas **não é 24/7**: dorme por inatividade, veja
 "O que muda na nuvem". Publicado, e privado, em
 <https://zeroplayer12-opcoes-daytrade-app-2z3e1c.streamlit.app>.
 
@@ -95,7 +131,7 @@ URL deste deploy: <https://zeroplayer12-opcoes-daytrade-app-2z3e1c.streamlit.app
 
 ---
 
-## 2. Túnel Cloudflare — link na hora, temporário
+## 3. Túnel Cloudflare sem conta — link na hora, temporário
 
 Serve o app **do seu próprio PC** para a internet. Não precisa de conta.
 Dois cliques em [`abrir-web.bat`](abrir-web.bat) sobem o Streamlit e o túnel
@@ -125,7 +161,7 @@ aponte o DNS da máquina para `1.1.1.1`.
 
 ---
 
-## 3. Vercel — por que não
+## 4. Vercel — por que não
 
 Vercel **não roda Streamlit**: funções serverless não têm WebSocket nem processo
 persistente, e o Streamlit depende dos dois. Um `streamlit run` lá trava em

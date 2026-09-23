@@ -50,6 +50,10 @@ após 12h sem visita.
 
 - **Privado de verdade:** escuta só em `127.0.0.1`, então nem outro aparelho da
   rede de casa acessa. Por isso não abre no celular.
+- **Para abrir de fora:** `publicar-painel.cmd` publica este mesmo painel em
+  `https://painel.quantunlab.com.br`, com senha, por um túnel da Cloudflare — o
+  Streamlit continua ouvindo só no `127.0.0.1`. Passo a passo no
+  [DEPLOY.md](DEPLOY.md), seção 1.
 - **Desativar o início automático:** apague `Painel de Opcoes.vbs` da pasta Inicializar.
 - **Uma instância só:** se o painel já estiver no ar, uma segunda execução do
   `iniciar-painel.cmd` sai sozinha em vez de ficar disputando a porta.
