@@ -57,7 +57,9 @@ def le_min(caminho) -> pd.DataFrame:
     return df[~df.index.duplicated(keep="last")].sort_index()
 
 
-def candles(ativo: str, minutos: int) -> pd.DataFrame:
+def candles(ativo: str, minutos: int, desde: pd.Timestamp | None = AQUECE) -> pd.DataFrame:
+    """Candles do cache do Profit. `desde=None` traz tudo o que ele guardou (a aba Realizadas usa
+    isso para períodos longos); o padrão corta no aquecimento das médias de 2022."""
     partes = []
     for pasta, meio in ((DB / "temp", "_1_0_0_"), (DB / "assets" / f"{ativo}_B_0", "_1_1_0_")):
         for arq in sorted(pasta.glob(f"{ativo}_B_0_1_{minutos}{meio}20*.min")):
@@ -67,7 +69,7 @@ def candles(ativo: str, minutos: int) -> pd.DataFrame:
     d = pd.concat(partes)
     d = d[~d.index.duplicated(keep="last")].sort_index()
     d.index = d.index.tz_localize(ope.BRT)
-    return d[d.index >= AQUECE]
+    return d if desde is None else d[d.index >= desde]
 
 
 def gravado_em(ativo: str, minutos: int) -> float | None:

@@ -3353,6 +3353,26 @@ def barras_estrategia(ativo: str) -> pd.DataFrame:
         return barras
 
 
+@cache_dados(ttl=1800, show_spinner=False)
+def _barras_longas(ativo: str) -> pd.DataFrame:
+    """Todo o histórico que o Profit guardou do ativo, ajustado por desdobramentos e proventos.
+    A aba Realizadas usa isto nos períodos longos: `barras_estrategia` só cobre os últimos
+    DIAS_DO_PROFIT dias. Quanto ele alcança depende do que o Profit baixou — a VALE3 de 10 min
+    começa em 2021, a ITUB4 de 15 min em 2020 e a PETR4 de 20 min em 2017."""
+    est = ope.ESTRATEGIAS.get(ativo)
+    if est is None:
+        return pd.DataFrame()
+    try:
+        import resultados
+        d = resultados.candles(ativo, est.minutos, desde=None)
+    except Exception:
+        return pd.DataFrame()
+    try:
+        return resultados.ajustado(ativo, d)
+    except Exception:
+        return d
+
+
 def _ultima_cotacao_rtd() -> datetime | None:
     """Hora do último negócio gravado hoje (o HOR do Profit), lendo só o fim do arquivo. É ela
     que diz se o Profit está mandando cotação — a data do arquivo não serve, porque o coletor
@@ -4163,7 +4183,8 @@ def _iv_recente(ativo: str, diario: dict, candles: pd.DataFrame) -> float | None
     return None
 
 
-def _resultado_na_opcao(ativo: str, est, op, candles: pd.DataFrame, diario: dict) -> dict:
+def _resultado_na_opcao(ativo: str, est, op, candles: pd.DataFrame, diario: dict,
+                        iv_ref: float | None = None) -> dict:
     """Resultado de comprar a opção no sinal (call na compra, put na venda) e vender nas saídas da
     estratégia, na mesma proporção delas.
 
@@ -4224,7 +4245,8 @@ def _resultado_na_opcao(ativo: str, est, op, candles: pd.DataFrame, diario: dict
             if sigma_novo is not None:
                 fonte_vol = "implícita da cotação de hoje"
     if sigma_novo is None:
-        sigma_novo = _iv_recente(ativo, diario, candles)
+        # `iv_ref` é essa mesma conta feita uma vez por ativo (a lista longa tem centenas de operações)
+        sigma_novo = iv_ref if iv_ref is not None else _iv_recente(ativo, diario, candles)
         if sigma_novo is not None:
             fonte_vol = "implícita de uma opção recente do ativo"
     if sigma_novo is None:
@@ -4258,31 +4280,48 @@ def _resultado_na_opcao(ativo: str, est, op, candles: pd.DataFrame, diario: dict
             "vol": sigma * 100 if sigma else None, "fonte_vol": fonte_vol}
 
 
-@cache_dados(ttl=60, show_spinner=False)
-def _operacoes_realizadas(dias: int) -> dict:
-    """Operações encerradas nos últimos `dias` (pela saída), dos ativos operados, com o resultado
-    na ação e na opção. Mesma simulação e mesmos candles da aba Operações."""
+@cache_dados(ttl=900, show_spinner=False)   # a lista longa leva ~50 s: recalcular a cada minuto trava a aba
+def _operacoes_realizadas(desde_iso: str, ate_iso: str) -> dict:
+    """Operações encerradas entre as duas datas (pela saída), dos ativos operados, com o resultado
+    na ação e na opção. Mesma simulação e mesmos candles da aba Operações; quando o período começa
+    antes do alcance dela, entra todo o histórico do cache do Profit (`_barras_longas`)."""
     try:
         diario = json.loads(DIARIO_OPCOES.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         diario = {}
-    desde = pd.Timestamp.now(tz=BRT).normalize() - pd.Timedelta(days=dias)
-    linhas, falhas = [], {}
+    desde = pd.Timestamp(desde_iso, tz=BRT)
+    ate = pd.Timestamp(ate_iso, tz=BRT) + pd.Timedelta(days=1)
+    longo = desde < pd.Timestamp.now(tz=BRT).normalize() - pd.Timedelta(days=DIAS_DO_PROFIT - 5)
+    linhas, falhas, comeco = [], {}, {}
     for ativo in ATIVOS_OPERADOS:
         est = ope.ESTRATEGIAS.get(ativo)
         if est is None:
             continue
         try:
-            res, _ = ope.situacao(est, barras_estrategia(ativo))
+            barras = barras_estrategia(ativo)
+            if longo:
+                antigas = _barras_longas(ativo)
+                if len(antigas):
+                    barras = pd.concat([antigas, barras])
+                    barras = barras[~barras.index.duplicated(keep="last")].sort_index()
+            res, _ = ope.situacao(est, barras)
         except Exception as exc:
             falhas[ativo] = str(exc)
             continue
+        comeco[ativo] = res.candles.index[0]
+        try:
+            iv_ref = _iv_recente(ativo, diario, res.candles)      # uma vez por ativo, não por operação
+        except Exception:
+            iv_ref = None
         for op in res.operacoes:
-            if op.aberta or op.entrada is None or op.execucoes[-1].hora < desde:
+            if op.aberta or op.entrada is None:
+                continue
+            fim = op.execucoes[-1].hora
+            if fim < desde or fim >= ate:
                 continue
             saidas = [e for e in op.execucoes if e.rotulo != "entrada"]
             try:
-                opcao = _resultado_na_opcao(ativo, est, op, res.candles, diario)
+                opcao = _resultado_na_opcao(ativo, est, op, res.candles, diario, iv_ref)
             except Exception:
                 opcao = {}
             linhas.append({
@@ -4290,7 +4329,40 @@ def _operacoes_realizadas(dias: int) -> dict:
                 "entrada": (op.entrada.hora, op.entrada.preco),
                 "saidas": [(_motivo(e, op), e.hora, e.preco, abs(e.qtd) / abs(op.entrada.qtd)) for e in saidas],
                 "acao": _pct_resultado(op), "opcao": opcao})
-    return {"linhas": sorted(linhas, key=lambda l: l["saidas"][-1][1], reverse=True), "falhas": falhas}
+    return {"linhas": sorted(linhas, key=lambda l: l["saidas"][-1][1], reverse=True), "falhas": falhas,
+            "comeco": comeco}
+
+
+def _grafico_acumulado(linhas: list[dict]):
+    """Capital acumulado no período: a soma das operações encerradas, na ação e na opção, na ordem
+    em que foram fechadas. Cada operação entra com o seu % — é lote fixo, sem juros compostos."""
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    d = pd.DataFrame([{"quando": l["saidas"][-1][1], "acao": l["acao"],
+                       "opcao": l["opcao"]["pct"] if l["opcao"] else None} for l in linhas]).sort_values("quando")
+    d["acao_ac"] = d["acao"].cumsum()
+    d["opcao_ac"] = d["opcao"].fillna(0.0).cumsum()
+    # dois gráficos, não duas linhas na mesma escala: a opção anda em dezenas de % e a ação em
+    # unidades, e juntas a linha da ação vira uma reta colada no zero
+    fig = make_subplots(rows=1, cols=2, horizontal_spacing=0.09,
+                        subplot_titles=("Na ação (% sobre a entrada)", "Na opção (% sobre o prêmio)"))
+    for col, cor, fundo, coluna in (("acao_ac", "#3987e5", "rgba(57,135,229,.12)", 1),
+                                    ("opcao_ac", "#d95926", "rgba(217,89,38,.12)", 2)):
+        fig.add_trace(go.Scatter(x=d["quando"], y=d[col], mode="lines", showlegend=False,
+                                 line=dict(color=cor, width=2), fill="tozeroy", fillcolor=fundo,
+                                 hovertemplate="%{x|%d/%m/%Y}<br>%{y:.1f}%<extra></extra>"), row=1, col=coluna)
+        fig.add_hline(y=0, line=dict(color="rgba(255,255,255,.22)", width=1), row=1, col=coluna)
+    fig.update_annotations(font=dict(size=12, color="#A9B4C8"))
+    fig.update_xaxes(showgrid=False, linecolor="rgba(255,255,255,.12)", tickformat="%d/%m/%y")
+    fig.update_yaxes(gridcolor="rgba(255,255,255,.06)", zeroline=False, ticksuffix="%")
+    fig.update_layout(
+        height=300, margin=dict(l=8, r=16, t=40, b=24), separators=",.",
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Inter, system-ui, sans-serif", size=12, color="#A9B4C8"),
+        hoverlabel=dict(bgcolor="#111829", bordercolor="rgba(255,255,255,.15)", font=dict(color="#F1F5F9")),
+        hovermode="x unified")
+    return fig
 
 
 def pagina_realizadas(cabecalho) -> None:
@@ -4302,16 +4374,34 @@ def pagina_realizadas(cabecalho) -> None:
     _html(_moldura("Operações encerradas das estratégias: resultado na ação e na opção",
                    f'<span class="pill">{_ic("relogio")}Recalculado às <b>{datetime.now(BRT):%H:%M}</b></span>'),
           cabecalho)
-    c_per, c_at = st.columns([3, 6], vertical_alignment="bottom")
+    hoje = datetime.now(BRT).date()
+    c_per, c_at = st.columns([5, 5], vertical_alignment="bottom")
     with c_per:
-        dias = st.segmented_control("Período", [7, 30, 90], key="real_periodo", required=True, default=30,
-                                    format_func=lambda d: f"{d} dias") or 30
+        escolha = st.segmented_control("Período", ["7 dias", "30 dias", "90 dias", "Desde 2018", "Personalizado"],
+                                       key="real_periodo", required=True, default="30 dias") or "30 dias"
     with c_at:
         filtro = st.segmented_control("Ativo", ["Todos"] + ATIVOS_OPERADOS, key="real_ativo", required=True,
                                       default="Todos") or "Todos"
+    if escolha == "Personalizado":
+        faixa = st.date_input("De / até", value=(hoje - timedelta(days=365), hoje), min_value=date(2018, 1, 1),
+                              max_value=hoje, format="DD/MM/YYYY", key="real_datas")
+        if not isinstance(faixa, (tuple, list)) or len(faixa) != 2:
+            _estado_vazio("calendario", "Escolha as duas datas", "Falta a data de fim do período.")
+            return
+        d_ini, d_fim = faixa
+    elif escolha == "Desde 2018":
+        d_ini, d_fim = date(2018, 1, 1), hoje
+    else:
+        d_ini, d_fim = hoje - timedelta(days=int(escolha.split()[0])), hoje
+    periodo_txt = (f"{d_ini:%d/%m/%Y} a {d_fim:%d/%m/%Y}" if escolha in ("Desde 2018", "Personalizado")
+                   else f"últimos {escolha}")
     with st.spinner("Recalculando as operações…"):
-        calculado = _operacoes_realizadas(int(dias))
-    linhas, falhas = calculado["linhas"], calculado["falhas"]
+        calculado = _operacoes_realizadas(d_ini.isoformat(), d_fim.isoformat())
+    linhas, falhas, comeco = calculado["linhas"], calculado["falhas"], calculado.get("comeco", {})
+    cobertura = [f"{a} desde {t:%m/%Y}" for a, t in sorted(comeco.items()) if t.date() > d_ini]
+    if cobertura:
+        _html(f'<div class="dx"><div class="opc-lim">{_ic("alerta")}<span>O Profit só guardou candles de '
+              f'<b>{_esc(", ".join(cobertura))}</b>. Antes disso não há operação para mostrar.</span></div></div>')
     if falhas:
         _html(f'<div class="dx"><div class="opc-lim">{_ic("alerta")}<span>Sem os candles de '
               f'<b>{", ".join(falhas)}</b> agora ({_esc(list(falhas.values())[0])}): as operações desses '
@@ -4333,7 +4423,7 @@ def pagina_realizadas(cabecalho) -> None:
     opcao = [l["opcao"]["pct"] for l in linhas if l["opcao"]]
     soma_a, soma_o = sum(acao), sum(opcao)
     tiles = (f'<div class="res-g">'
-             f'<div><span>Operações</span><b>{len(linhas)}</b><em>encerradas em {dias} dias</em></div>'
+             f'<div><span>Operações</span><b>{len(linhas)}</b><em>encerradas · {_esc(periodo_txt)}</em></div>'
              f'<div><span>Acerto na ação</span><b>{sum(v > 0 for v in acao) / len(acao) * 100:.0f}%</b>'
              f'<em>{sum(v > 0 for v in acao)} no positivo</em></div>'
              f'<div><span>Resultado na ação</span><b class="{tom(soma_a)}">{pc(soma_a)}</b>'
@@ -4343,8 +4433,9 @@ def pagina_realizadas(cabecalho) -> None:
              f'<div><span>Acerto na opção</span>'
              f'<b>{(sum(v > 0 for v in opcao) / len(opcao) * 100) if opcao else 0:.0f}%</b>'
              f'<em>{sum(v > 0 for v in opcao)} no positivo</em></div></div>')
+    LIMITE_TABELA = 400        # 1.600 linhas de uma vez travam a página; o gráfico e os números usam tudo
     corpo = []
-    for l in linhas:
+    for l in linhas[:LIMITE_TABELA]:
         (h_ent, p_ent), saidas, o = l["entrada"], l["saidas"], l["opcao"]
         venda = l["lado"] < 0
         passos = "".join(f"<small>{m} {h:%d/%m %H:%M} · {_num(p, 2)}"
@@ -4369,11 +4460,17 @@ def pagina_realizadas(cabecalho) -> None:
             f'<td>{h:%d/%m %H:%M}<small>{_num(p, 2)} · {m}</small>{passos}</td>'
             f'<td class="num {tom(l["acao"])}">{pc(l["acao"])}</td>'
             f'<td>{opcao_txt}</td><td>{precos}</td>{opcao_pct}</tr>')
+    _html(f'<div class="dx"><div class="card"><div class="card-h"><div class="t">{_ic("barras")}'
+          f'Capital acumulado</div><div class="d">soma das operações encerradas · {_esc(periodo_txt)}</div>'
+          f'</div></div></div>')
+    st.plotly_chart(_grafico_acumulado(linhas), config={"displayModeBar": False}, **_LARGURA)
     cab = ("<th>Sinal</th><th>Ativo</th><th>Lado</th><th>Entrada</th><th>Saída</th><th>Ação</th>"
            "<th>Opção</th><th>Opção: entrada → saída</th><th>Na opção</th>")
     _html(f'<div class="dx"><div class="card"><div class="card-h"><div class="t">{_ic("grade")}'
           f'{"Todas as estratégias" if filtro == "Todos" else _esc(filtro)}</div>'
-          f'<div class="d">da saída mais recente para a mais antiga</div></div>{tiles}'
+          f'<div class="d">da saída mais recente para a mais antiga'
+          + (f' · mostrando as {LIMITE_TABELA} últimas de {len(linhas)}' if len(linhas) > LIMITE_TABELA else "")
+          + f'</div></div>{tiles}'
           f'<div class="tbl-wrap"><table class="rk"><thead><tr>{cab}</tr></thead>'
           f'<tbody>{"".join(corpo)}</tbody></table></div></div></div>')
 
