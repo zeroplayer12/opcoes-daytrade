@@ -2895,10 +2895,68 @@ def _manter_estado() -> None:
         st.session_state[chave] = st.session_state[chave]
 
 
+ACESSO = Path(os.environ.get("LOCALAPPDATA") or Path(__file__).resolve().parent) / "PainelDayTrade" / "acesso.json"
+
+
+def _acesso() -> dict | None:
+    """Senha do painel, quando existir: `st.secrets` (nuvem), variáveis de ambiente ou o arquivo
+    `%LOCALAPPDATA%\\PainelDayTrade\\acesso.json` (fora do OneDrive e do Git), gravado pelo
+    `configurar_senha.py`. Sem nenhuma das três, o painel abre direto, como sempre abriu no PC."""
+    try:
+        if "painel" in st.secrets and st.secrets["painel"].get("hash"):
+            return {"hash": st.secrets["painel"]["hash"], "salt": st.secrets["painel"]["salt"]}
+    except Exception:
+        pass
+    if os.environ.get("PAINEL_HASH") and os.environ.get("PAINEL_SALT"):
+        return {"hash": os.environ["PAINEL_HASH"], "salt": os.environ["PAINEL_SALT"]}
+    try:
+        cfg = json.loads(ACESSO.read_text(encoding="utf-8"))
+        return cfg if cfg.get("hash") and cfg.get("salt") else None
+    except (OSError, ValueError):
+        return None
+
+
+def confere_senha(senha: str, cfg: dict) -> bool:
+    import hashlib
+    calculado = hashlib.pbkdf2_hmac("sha256", senha.encode(), bytes.fromhex(cfg["salt"]), 200_000).hex()
+    return hmac_igual(calculado, cfg["hash"])
+
+
+def hmac_igual(a: str, b: str) -> bool:
+    """Comparação de tempo constante: não entrega o tamanho do acerto por quem responde mais rápido."""
+    import hmac
+    return hmac.compare_digest(a, b)
+
+
+def _tela_de_login(cfg: dict) -> bool:
+    """Entrou? Com senha configurada, o painel inteiro fica atrás desta tela."""
+    if st.session_state.get("_entrou"):
+        return True
+    _, meio, _ = st.columns([1, 2, 1])
+    with meio:
+        st.markdown('<div style="height:12vh"></div>', unsafe_allow_html=True)
+        _html('<div class="card"><div class="card-h"><div class="t">Painel Day Trade</div>'
+              '<div class="d">acesso restrito</div></div></div>')
+        with st.form("login", border=False):
+            senha = st.text_input("Senha", type="password", label_visibility="collapsed",
+                                  placeholder="Senha")
+            if st.form_submit_button("Entrar", **_LARGURA):
+                if senha and confere_senha(senha, cfg):
+                    st.session_state["_entrou"] = True
+                    st.rerun()
+                else:
+                    time.sleep(1.5)          # atrasa a tentativa seguinte
+                    st.error("Senha incorreta.")
+    return False
+
+
 def main() -> None:
     st.set_page_config(page_title="Painel Day Trade · B3", page_icon="📈", layout="wide",
                        initial_sidebar_state="auto")
     st.markdown(_CSS, unsafe_allow_html=True)
+    cfg_acesso = _acesso()
+    if cfg_acesso and not _tela_de_login(cfg_acesso):
+        return
     _manter_estado()
     _garante_servicos()
     cabecalho = st.empty()
