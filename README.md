@@ -605,15 +605,25 @@ dividido pelo pedágio maior que 1, o ano fecha positivo; menor que 1, negativo.
   platô (trail de 40% dava 489%, de 50% dava 2.888%) e com as 5 melhores respondendo por 51% a 206%
   do lucro. Direção com lastro, parâmetros sem: por isso registra em vez de mudar a regra.
 - **[`analise_opcao.py`](analise_opcao.py)** refaz a decomposição ano a ano. Com a implícita medida
-  no COTAHIST, a perna da opção de 2021 a 2026 dá **+2.452% em 1.453 operações**, líquido de 1% de
-  spread — **um único ano negativo** (2021, que só tem meio ano de candles) e cerca de **R$ 61 mil
-  por ano** com mão de R$ 15 mil. Por ativo: PETR4 +1.354%, VALE3 +551%, ITUB4 +546%.
+  no COTAHIST e o calendário de vencimento certo, a perna da opção de **2018 a 2026** dá
+  **+2.440% em 1.607 operações**, líquido de 1% de spread — **três anos negativos em nove** e cerca
+  de **R$ 41 mil por ano** com mão de R$ 15 mil. Por ativo: PETR4 +1.377%, ITUB4 +591%, VALE3 +471%.
   `--fator X` e `--sem-medida` reprecificam com estimativa, para comparar.
-  - **O spread decide o resto.** Bruto são +3.905%; cada 1% de spread custa 1.453 pontos. A 1%
-    sobra +2.452%, a 2% sobra +999%, a 3% vira −454%. Executar dentro de ~2% do meio do book é a
-    condição para a conta fechar.
-  - As conclusões por ativo que tiraram do book ao vivo (VALE3 boa, PETR4 ruim) **não sobreviveram**
-    à amostra grande: eram 4 e 1 observação, num mês caro.
+  - **A razão direcional ÷ pedágio acerta o sinal de 9 anos em 9.** Positiva acima de 1 (2018: 1,93
+    · 2022: 2,07 · 2023: 1,83 · 2024: 1,03 · 2025: 1,39 · 2026: 2,44), negativa abaixo (2019: 0,60 ·
+    2020: 0,70 · 2021: 0,58).
+  - **Os três anos negativos são os três em que a ação também não andou** (2019 −3,2%, 2020 +0,4%,
+    2021 +12,4% com meio ano de VALE3). A opção não estragou ano nenhum — multiplicou por ~15 o que
+    a estratégia entregou.
+  - **O spread decide o resto.** Cada 1% de spread custa 1.607 pontos. A 1% sobra +2.440%, a 2%
+    sobra +833%, a 3% vira −774%. Executar dentro de ~2% do meio do book é a condição.
+  - As conclusões por ativo que saíram do book ao vivo (VALE3 boa, PETR4 ruim) **não sobreviveram**
+    à amostra grande: eram 4 e 1 observação, num mês caro. Na série inteira a PETR4 é a melhor.
+  - **Não há filtro para os anos ruins.** Sete hipóteses testadas (mercado picado, nível e regime de
+    volatilidade, tendência pela MM200, amplitude, estratégia em queda, migração do movimento para o
+    gap, acerto das 30 últimas): nenhuma sobrevive ao teste de consistência entre ativos e entre
+    desenvolvimento e teste. O regime existe — o acerto da PETR4 caiu de 46% para 33–35% em
+    2019–2020, com o mesmo tamanho de ganho e de perda — mas não é antecipável.
 - O `vigia.py` roda as duas medidas uma vez por pregão, depois das 18:45, em linha à parte, e
   **avisa** quando um ativo junta amostra e sai do fator geral para o próprio — é a hora de rodar o
   `analise_opcao.py` de novo, porque o painel passou a responder outra coisa.
