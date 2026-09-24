@@ -276,11 +276,37 @@ def proximo_dia_util(d: date) -> date:
     return d
 
 
+def dia_util_anterior(d: date) -> date:
+    hol = set(feriados_b3(d.year - 1, d.year + 1))
+    while d.weekday() >= 5 or d in hol:
+        d -= timedelta(days=1)
+    return d
+
+
+TROCA_SEXTA = date(2021, 5, 1)   # a B3 trocou o vencimento na série de maio/2021
+
+
 def terceira_sexta(ano: int, mes: int) -> date:
-    """Vencimento padrão de opções de ações na B3: 3ª sexta-feira do mês."""
+    """Vencimento das opções de ações na B3 no mês. Duas regras, conferidas no COTAHIST:
+
+    - **3ª sexta-feira** — mas **3ª segunda-feira até abril/2021**: 19/04/2021 foi segunda e
+      21/05/2021 foi sexta, e os vencimentos de 2019–2020 são todos segundas (16/03/2020,
+      20/04/2020, 18/01/2021). Sem isso, a simulação de opção antes de maio/2021 usa uma data que
+      nunca existiu, e o prazo até o vencimento — que é o pedágio — sai errado em 2 a 4 dias úteis.
+    - Caindo em feriado, a data de sexta **antecipa** para o pregão anterior (Sexta Santa levou o
+      vencimento para 14/04/2022 e 17/04/2025, não para a segunda seguinte). Na regra antiga, de
+      segunda, ia para a segunda seguinte (Carnaval de 15/02/2021 → 22/02/2021).
+    """
     primeiro = date(ano, mes, 1)
-    primeira_sexta = primeiro + timedelta(days=(4 - primeiro.weekday()) % 7)
-    return proximo_dia_util(primeira_sexta + timedelta(days=14))
+    sexta = primeiro >= TROCA_SEXTA
+    alvo = 4 if sexta else 0
+    terceira = primeiro + timedelta(days=(alvo - primeiro.weekday()) % 7) + timedelta(days=14)
+    if sexta:
+        return dia_util_anterior(terceira)
+    hol = set(feriados_b3(ano - 1, ano + 1))
+    while terceira.weekday() >= 5 or terceira in hol:
+        terceira += timedelta(days=7)
+    return terceira
 
 
 def eh_vencimento_mensal(v: date) -> bool:

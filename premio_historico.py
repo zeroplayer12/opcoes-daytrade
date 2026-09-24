@@ -85,6 +85,13 @@ def le_cotahist(arq: pathlib.Path, ativos) -> pd.DataFrame:
     return d
 
 
+def eh_mensal(v: date) -> bool:
+    """Vencimento mensal de opção de ação na B3, com a regra da época — `app.terceira_sexta` trata
+    as duas (terceira segunda até abril/2021, terceira sexta depois) e o feriado."""
+    import app
+    return app.eh_vencimento_mensal(v)
+
+
 def _realizada(fech: pd.Series, ate: pd.Timestamp, janela: int) -> float | None:
     r = np.log(fech[fech.index < ate]).diff().dropna().tail(janela)
     if len(r) < max(20, janela // 3):
@@ -134,7 +141,7 @@ def mede(pasta: pathlib.Path, ativos=ATIVOS) -> pd.DataFrame:
                 if cand.empty:
                     continue
                 cand["venc_d"] = pd.to_datetime(cand["venc"], format="%Y%m%d").dt.date
-                cand = cand[cand["venc_d"].map(app.eh_vencimento_mensal)]
+                cand = cand[cand["venc_d"].map(eh_mensal)]
                 cand["du"] = [app.dias_uteis(dia.date(), v) for v in cand["venc_d"]]
                 elegiveis = sorted({v for v, du in zip(cand["venc_d"], cand["du"]) if du >= minimo})
                 if not elegiveis:
