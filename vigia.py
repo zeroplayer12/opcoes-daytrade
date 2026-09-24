@@ -284,6 +284,37 @@ def medidas_do_dia(agora) -> None:
     threading.Thread(target=roda, daemon=True).start()
 
 
+_book = {"dia": None, "tentativa": 0.0}
+
+
+def book_de_referencia(app, agora) -> None:
+    """No começo do pregão, assina uma call e uma put no dinheiro de cada ativo operado — sem
+    relação com sinal — só para o coletor gravar o book delas o dia inteiro.
+
+    É o que dá amostra diária ao volatilidade.py: antes disso só entrava opção quando havia sinal
+    (~2 por pregão, nenhuma da ITUB4). A grade do site leva alguns segundos por ativo, então roda
+    uma vez por dia, a partir das 10:15, e tenta de novo em 20 min se falhar."""
+    if (_book["dia"] == agora.date() or (agora.hour, agora.minute) < (10, 15)
+            or time.time() - _book["tentativa"] < 1200):
+        return
+    _book["tentativa"] = time.time()
+
+    def roda():
+        try:
+            r = app.book_de_referencia(app.ATIVOS_OPERADOS)
+            if r["assinadas"]:
+                _book["dia"] = agora.date()
+                log("book de referência assinado: "
+                    + ", ".join(f"{k} {v}" for k, v in sorted(r["assinadas"].items()))
+                    + (f" · falhou em {r['erros']}" if r["erros"] else ""))
+            else:
+                log(f"book de referência não assinou nada: {r['erros']}")
+        except Exception as exc:
+            log(f"book de referência falhou: {type(exc).__name__}: {exc}")
+
+    threading.Thread(target=roda, daemon=True).start()
+
+
 def main() -> None:
     _mutex = instancia_unica()  # noqa: F841 — segura o mutex até o processo acabar
     log("vigia iniciado")
@@ -298,6 +329,7 @@ def main() -> None:
         if not em_pregao(agora):
             time.sleep(60)
             continue
+        book_de_referencia(app, agora)
         v.cfg = avisos.carregar()          # mudou o avisos.json? vale no próximo ciclo
         try:
             v.ciclo()

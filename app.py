@@ -3293,18 +3293,17 @@ def assinar_opcoes(tickers) -> None:
         pass
 
 
-def anotar_opcao(ativo: str, op, info: dict | None) -> None:
-    """Guarda a opção sugerida na primeira vez que a operação aparece — é a que ele compra — para a
-    aba Realizadas medir o resultado nela, mesmo depois que a sugestão do dia mudar de série."""
-    if op is None or not info or "opcao" not in info:
-        return
-    chave = f"{ativo}|{op.hora_sinal:%Y%m%d%H%M}"
+def _anotar_no_diario(chave: str, info: dict) -> bool:
+    """Grava strike e vencimento de uma opção no diário, se a chave ainda não existir. É o que
+    permite tirar a implícita dela depois (volatilidade.py) — sem strike não há conta."""
+    if not info or "opcao" not in info:
+        return False
     try:
         diario = json.loads(DIARIO_OPCOES.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         diario = {}
     if chave in diario:
-        return
+        return False
     o = info["opcao"]
     diario[chave] = {"ticker": str(o["ticker"]), "tipo": info["tipo"], "strike": float(o["strike"]),
                      "venc": f"{info['venc']:%Y-%m-%d}", "anotado": datetime.now(BRT).isoformat(timespec="seconds")}
@@ -3314,7 +3313,43 @@ def anotar_opcao(ativo: str, op, info: dict | None) -> None:
         tmp.write_text(json.dumps(diario, ensure_ascii=False, indent=1), encoding="utf-8")
         tmp.replace(DIARIO_OPCOES)
     except OSError:
-        pass
+        return False
+    return True
+
+
+def anotar_opcao(ativo: str, op, info: dict | None) -> None:
+    """Guarda a opção sugerida na primeira vez que a operação aparece — é a que ele compra — para a
+    aba Realizadas medir o resultado nela, mesmo depois que a sugestão do dia mudar de série."""
+    if op is None:
+        return
+    _anotar_no_diario(f"{ativo}|{op.hora_sinal:%Y%m%d%H%M}", info or {})
+
+
+def book_de_referencia(ativos, hoje: date | None = None, taxa: float | None = None) -> dict:
+    """Assina uma call e uma put no dinheiro de cada ativo, sem relação com sinal nenhum.
+
+    Não é sugestão de operação: serve para o coletor gravar o book delas o pregão inteiro e o
+    `volatilidade.py` ter amostra do prêmio de volatilidade todo dia. Sem isso a amostra só cresce
+    quando há sinal — eram ~2 opções por pregão, e a ITUB4 não tinha nenhuma medição."""
+    hoje = hoje or datetime.now(BRT).date()
+    taxa = TAXA_PADRAO if taxa is None else taxa      # TAXA_PADRAO é definido mais abaixo no arquivo
+    assinadas, erros = {}, {}
+    for ativo in ativos:
+        for lado, tipo in ((1, "CALL"), (-1, "PUT")):
+            try:
+                info = opcao_para_sinal(ativo, lado, hoje, taxa)
+            except Exception as exc:
+                erros[f"{ativo} {tipo}"] = str(exc)
+                continue
+            if "opcao" not in info:
+                erros[f"{ativo} {tipo}"] = info.get("erro", "sem série elegível")
+                continue
+            ticker = str(info["opcao"]["ticker"])
+            _anotar_no_diario(f"{ativo}|ref{hoje:%Y%m%d}{tipo[0]}", info)
+            assinadas[f"{ativo} {tipo}"] = ticker
+    if assinadas:
+        assinar_opcoes(list(assinadas.values()))
+    return {"assinadas": assinadas, "erros": erros}
 
 
 def cotacao_ao_vivo(ticker: str) -> dict | None:

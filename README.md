@@ -574,6 +574,12 @@ dividido pelo pedágio maior que 1, o ano fecha positivo; menor que 1, negativo.
   prêmio** e **implícita de 1,30× a realizada** — VALE3 em 1,09, BPAC11 em 1,35, PETR4 em 1,47,
   BOVA11 em 1,50. Amostra de um regime só: o módulo usa o fator do próprio ativo apenas com 12
   medições em 8 pregões, senão o geral, senão 1,30.
+- **O book de referência (24/09/2026)** é o que dá amostra todo dia. O `vigia.py` assina, às 10:15,
+  uma call e uma put no dinheiro de **cada ativo operado** (`app.book_de_referencia`), sem relação
+  com sinal nenhum — o coletor grava o book delas o pregão inteiro. Antes só entrava opção quando
+  havia sinal: ~2 por pregão, e a ITUB4 não tinha medição nenhuma. Com 6 por pregão, a trava de
+  amostra de cada ativo cai em cerca de duas semanas em vez de um mês e meio. Elas vão para o
+  diário com a chave `ATIVO|refAAAAMMDD{C,P}`, que não colide com a das operações.
 - **O que isso quer dizer:** a 1,30× a perna da opção nos seis anos vale perto de zero líquido — o
   prêmio cobrado é do tamanho do que a estratégia entrega. A diferença entre VALE3 (1,09) e PETR4
   (1,47) bate com a decomposição por ativo, em que a VALE3 é positiva nos seis anos e a PETR4
