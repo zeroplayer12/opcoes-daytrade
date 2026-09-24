@@ -553,6 +553,39 @@ gráfico de candles do pregão com as linhas da operação. Abre direto em
   atualizações pode escapar.
 - Resultado em R$ para o lote de 200 ações, sem custos.
 
+## O prêmio de volatilidade da opção
+
+A perna da opção, por operação, é `alavancagem × movimento da ação − pedágio do tempo`. A
+alavancagem é **inversamente proporcional à volatilidade implícita**; o pedágio, em % do prêmio,
+não depende dela — só da fração da vida da opção que a operação consome
+(`1 − √(1 − dias segurados / prazo)`). Daí a regra que resume os seis anos: **ganho direcional
+dividido pelo pedágio maior que 1, o ano fecha positivo; menor que 1, negativo.**
+
+- **A IV da operação antiga é a da época (24/09/2026).** Antes, sem preço gravado da opção, o
+  painel usava a implícita de uma opção de **hoje** para 2021–2026 inteiro. A realizada da VALE3 foi
+  de 40% em 2022 a 22% em 2024 e o prêmio vai junto: isso inflava os anos de volatilidade alta e
+  afundava os de volatilidade baixa. Com a correção, 2025 saiu de **−55% para +265%**, 2022 de
+  **+1.225% para +450%** e 2021 de +27% para −148%; 2024 continua negativo nas duas versões (foi o
+  ano em que os movimentos realmente encolheram, 0,11% por operação contra 0,24% em 2022). Até
+  `DIAS_IV_RECENTE` (45 dias) a implícita de uma opção de hoje continua valendo.
+- **[`volatilidade.py`](volatilidade.py)** mede, em cada pregão gravado pelo coletor, o spread do
+  book e a implícita contra a realizada de 60 pregões, e acumula em `dados_rt/premio_vol.json`. É
+  ele que dá o fator usado acima. Primeira medida (6 pregões, 10 opções): **spread de 1,1% do
+  prêmio** e **implícita de 1,30× a realizada** — VALE3 em 1,09, BPAC11 em 1,35, PETR4 em 1,47,
+  BOVA11 em 1,50. Amostra de um regime só: o módulo usa o fator do próprio ativo apenas com 12
+  medições em 8 pregões, senão o geral, senão 1,30.
+- **O que isso quer dizer:** a 1,30× a perna da opção nos seis anos vale perto de zero líquido — o
+  prêmio cobrado é do tamanho do que a estratégia entrega. A diferença entre VALE3 (1,09) e PETR4
+  (1,47) bate com a decomposição por ativo, em que a VALE3 é positiva nos seis anos e a PETR4
+  negativa em três.
+- **[`mesa_opcao.py`](mesa_opcao.py)** registra, sem operar, onde a opção teria saído se não fosse
+  vendida junto com a ação: *ganhadora corre* (perdedora sai com a ação, ganhadora segue com stop
+  móvel de 50% do topo) e *opção solta* (a opção manda desde a entrada). Na simulação de 2021–2026
+  essas saídas melhoraram a mediana em ~60% e cortaram as operações de 1.452 para 250–600 — mas sem
+  platô (trail de 40% dava 489%, de 50% dava 2.888%) e com as 5 melhores respondendo por 51% a 206%
+  do lucro. Direção com lastro, parâmetros sem: por isso registra em vez de mudar a regra.
+- O `vigia.py` roda as duas medidas uma vez por pregão, depois das 18:45, em linha à parte.
+
 ## Robustez a mudança de colunas
 
 O site pode renomear colunas a qualquer momento. `mapear_colunas()` resolve isso com

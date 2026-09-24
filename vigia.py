@@ -244,6 +244,35 @@ def resultados_do_dia() -> None:
     threading.Thread(target=roda, daemon=True).start()
 
 
+_medida = {"rodando": False, "dia": None}
+
+
+def medidas_do_dia(agora) -> None:
+    """Depois do fechamento, acumula as duas medidas que só o tempo resolve: o prêmio de
+    volatilidade do book (volatilidade.py) e a mesa de testes da saída da opção (mesa_opcao.py).
+    Uma vez por pregão, em linha à parte."""
+    if _medida["rodando"] or _medida["dia"] == agora.date() or (agora.hour, agora.minute) < (18, 45):
+        return
+    _medida.update(rodando=True, dia=agora.date())
+
+    def roda():
+        try:
+            import volatilidade
+            volatilidade.medir()
+            log("prêmio de volatilidade: " + volatilidade.resumo().replace("\n", " · "))
+        except Exception as exc:
+            log(f"prêmio de volatilidade falhou: {type(exc).__name__}: {exc}")
+        try:
+            import mesa_opcao
+            log("mesa da opção: " + mesa_opcao.placar(mesa_opcao.atualizar()).replace("\n", " · "))
+        except Exception as exc:
+            log(f"mesa da opção falhou: {type(exc).__name__}: {exc}")
+        finally:
+            _medida["rodando"] = False
+
+    threading.Thread(target=roda, daemon=True).start()
+
+
 def main() -> None:
     _mutex = instancia_unica()  # noqa: F841 — segura o mutex até o processo acabar
     log("vigia iniciado")
@@ -254,6 +283,7 @@ def main() -> None:
     while True:
         agora = datetime.now(app.BRT)
         resultados_do_dia()
+        medidas_do_dia(agora)
         if not em_pregao(agora):
             time.sleep(60)
             continue

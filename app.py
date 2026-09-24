@@ -49,6 +49,7 @@ import pandas as pd
 import streamlit as st
 
 import operacoes as ope
+import volatilidade as vol
 
 try:  # requests é opcional: sem ele a Rota A1 é simplesmente pulada
     import requests
@@ -4141,6 +4142,7 @@ def _secao_resultados() -> None:
 # ---------------- Aba Realizadas -------------------------------------------------------
 TAXA_PADRAO = 0.1075     # juro do Black-Scholes, o mesmo padrão da aba Opções
 D1_DELTA_55 = 0.12566    # N(d1) = 0,55: |Δ| no meio da faixa 0,50–0,70 das regras
+DIAS_IV_RECENTE = 45     # até aqui a implícita de uma opção de hoje ainda representa a da operação
 
 
 @cache_dados(ttl=120, show_spinner=False)
@@ -4302,11 +4304,20 @@ def _resultado_na_opcao(ativo: str, est, op, candles: pd.DataFrame, diario: dict
             sigma_novo = implicita(mercado, cot.get("spot") or candles["close"].iloc[-1], agora)
             if sigma_novo is not None:
                 fonte_vol = "implícita da cotação de hoje"
-    if sigma_novo is None:
+    if sigma_novo is None and (pd.Timestamp.now(tz=BRT) - ent.hora) <= pd.Timedelta(days=DIAS_IV_RECENTE):
         # `iv_ref` é essa mesma conta feita uma vez por ativo (a lista longa tem centenas de operações)
         sigma_novo = iv_ref if iv_ref is not None else _iv_recente(ativo, diario, candles)
         if sigma_novo is not None:
             fonte_vol = "implícita de uma opção recente do ativo"
+    if sigma_novo is None:
+        # Operação antiga: a implícita de uma opção de HOJE não serve para 2022. A volatilidade muda
+        # de regime — a realizada da VALE3 foi de 40% em 2022 para 22% em 2024 — e o prêmio da opção
+        # vai junto. Usar uma IV só para a série inteira inflava os anos de volatilidade alta e
+        # afundava os de volatilidade baixa (2025 aparecia em −55% quando foi positivo). Aqui entra a
+        # realizada da época vezes o prêmio de volatilidade medido no book (volatilidade.py).
+        sigma_novo = vol.iv_da_epoca(ativo, candles, ent.hora)
+        if sigma_novo is not None:
+            fonte_vol = f"realizada da época × {vol.premio(ativo):.2f} (prêmio medido)"
     if sigma_novo is None:
         sigma_novo, fonte_vol = sigma if sigma is not None else _vol_historica(candles, ent.hora), \
             "histórica da ação"
