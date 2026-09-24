@@ -261,8 +261,14 @@ def medidas_do_dia(agora) -> None:
         ok = True
         try:
             import volatilidade
-            volatilidade.medir()
+            d = volatilidade.medir()
             log("prêmio de volatilidade: " + volatilidade.resumo().replace("\n", " · "))
+            if d.get("mudou"):
+                # O painel passou a precificar a série antiga desse ativo com o fator dele, não com
+                # o geral. Muda o resultado das abas: é hora de refazer o analise_opcao.py.
+                texto = "\n".join(f"{a}: {de or 'geral'} → {para}×" for a, (de, para) in d["mudou"].items())
+                log("prêmio de volatilidade mudou — " + texto.replace("\n", " / "))
+                avisos.enviar("Prêmio de volatilidade atualizado", texto, avisos.carregar())
         except Exception as exc:
             ok = False
             log(f"prêmio de volatilidade falhou: {type(exc).__name__}: {exc}")

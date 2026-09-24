@@ -174,6 +174,13 @@ def medir(tudo: bool = False) -> dict:
                 "fator": round(iv / rv60, 3) if rv60 else None, "cotacoes": int(len(g))})
             novas += 1
 
+    # Qual fator cada ativo passa a usar. Quando um deles sai do geral para o próprio, o painel
+    # muda de resposta — e é a deixa para refazer a análise dos anos (analise_opcao.py).
+    antes = dados.get("em_uso") or {}
+    dados["em_uso"] = {a: round(premio(a, dados=dados), 3)
+                       for a in sorted({m["ativo"] for m in dados["medidas"]})}
+    # ativo que aparece pela primeira vez não é mudança: ele já vinha no fator geral
+    dados["mudou"] = {a: [antes[a], v] for a, v in dados["em_uso"].items() if a in antes and antes[a] != v}
     dados["gerado"] = datetime.now().isoformat(timespec="seconds")
     dados["medidas"].sort(key=lambda m: (m["dia"], m["opcao"]))
     ARQ.parent.mkdir(exist_ok=True)
@@ -193,13 +200,17 @@ def _validas(dados: dict, ativo: str | None = None) -> list[dict]:
             if m.get("fator") and FAIXA[0] <= m["fator"] <= FAIXA[1] and (ativo is None or m["ativo"] == ativo)]
 
 
-def premio(ativo: str | None = None) -> float:
+def premio(ativo: str | None = None, min_obs: int = MIN_OBS, min_dias: int = MIN_DIAS,
+           dados: dict | None = None) -> float:
     """Quanto a implícita fica acima da realizada, na mediana. Usa o do próprio ativo quando há
-    medida suficiente; senão o geral; senão o padrão medido em 24/09/2026."""
-    dados = _le()
+    medida suficiente; senão o geral; senão o padrão medido em 24/09/2026.
+
+    `min_obs`/`min_dias` a 1 tiram a trava de amostra: serve para a análise (`analise_opcao.py`)
+    mostrar o que aconteceria com o fator medido de cada ativo antes de ele valer no painel."""
+    dados = _le() if dados is None else dados
     if ativo:
         meu = _validas(dados, ativo)
-        if len(meu) >= MIN_OBS and len({m["dia"] for m in meu}) >= MIN_DIAS:
+        if meu and len(meu) >= min_obs and len({m["dia"] for m in meu}) >= min_dias:
             return float(np.median([m["fator"] for m in meu]))
     geral = _validas(dados)
     if len(geral) >= MIN_OBS_GERAL:

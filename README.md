@@ -584,7 +584,16 @@ dividido pelo pedágio maior que 1, o ano fecha positivo; menor que 1, negativo.
   essas saídas melhoraram a mediana em ~60% e cortaram as operações de 1.452 para 250–600 — mas sem
   platô (trail de 40% dava 489%, de 50% dava 2.888%) e com as 5 melhores respondendo por 51% a 206%
   do lucro. Direção com lastro, parâmetros sem: por isso registra em vez de mudar a regra.
-- O `vigia.py` roda as duas medidas uma vez por pregão, depois das 18:45, em linha à parte.
+- **[`analise_opcao.py`](analise_opcao.py)** refaz a decomposição ano a ano com o fator do momento.
+  `--por-ativo` usa o fator medido de cada ativo mesmo antes de ele valer no painel, `--fator 1.15`
+  força um valor. Com o fator geral de 1,30 a perna da opção em 2021–2026 dá **+124% em 1.435
+  operações** (3 anos negativos); com o fator de cada ativo (VALE3 1,09 · PETR4 1,47 · ITUB4 1,30),
+  **+663%** (2 anos negativos) — e o sinal se inverte por ativo: VALE3 vai de −468% para **+464%** e
+  PETR4 de +270% para **−122%**. São 4 medições da VALE3 e 1 da PETR4: é hipótese com número, não
+  conclusão.
+- O `vigia.py` roda as duas medidas uma vez por pregão, depois das 18:45, em linha à parte, e
+  **avisa** quando um ativo junta amostra e sai do fator geral para o próprio — é a hora de rodar o
+  `analise_opcao.py` de novo, porque o painel passou a responder outra coisa.
 
 ## Robustez a mudança de colunas
 
