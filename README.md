@@ -568,6 +568,20 @@ dividido pelo pedágio maior que 1, o ano fecha positivo; menor que 1, negativo.
   **+1.225% para +450%** e 2021 de +27% para −148%; 2024 continua negativo nas duas versões (foi o
   ano em que os movimentos realmente encolheram, 0,11% por operação contra 0,24% em 2022). Até
   `DIAS_IV_RECENTE` (45 dias) a implícita de uma opção de hoje continua valendo.
+- **A implícita de verdade, de 2021 a 2026 (24/09/2026).** O COTAHIST da B3 traz strike, vencimento
+  e book de fechamento de toda opção negociada. [`premio_historico.py`](premio_historico.py) lê os
+  arquivos anuais e calcula a implícita da série de |Δ| 0,55 em cada pregão: **13.345 medições em
+  1.421 pregões**, VALE3, PETR4, ITUB4, BOVA11 e BPAC11. O painel agora precifica cada operação
+  antiga com **a implícita que a opção tinha naquele dia** (`volatilidade.iv_medida`), na entrada e
+  na saída — a estimativa por realizada × prêmio virou só o plano B.
+  - **Fator medido: 1,02×** (BOVA11 1,04 · ITUB4 1,04 · PETR4 1,01 · VALE3 1,00 · BPAC11 1,00), e
+    estável ano a ano entre 0,93 e 1,18. Ou seja: o mercado cobra **a volatilidade realizada**, sem
+    prêmio relevante.
+  - O 1,30 que o book ao vivo indicou em 15–23/09/2026 era **o mês**, não a regra: setembro/2026
+    aparece na série mensal em 1,56 · 1,29 · 1,38 · 1,59 — dos mais caros de todo o histórico.
+  - O book do **fechamento** tem spread mediano de 6,4%, contra 1,1% medido no book intradiário. Para
+    quem entra durante o pregão vale o segundo; o de fechamento só serve quando é apertado, por isso
+    `SPREAD_MAX` descarta o resto e usa o último negócio.
 - **[`volatilidade.py`](volatilidade.py)** mede, em cada pregão gravado pelo coletor, o spread do
   book e a implícita contra a realizada de 60 pregões, e acumula em `dados_rt/premio_vol.json`. É
   ele que dá o fator usado acima. Primeira medida (6 pregões, 10 opções): **spread de 1,1% do
@@ -590,13 +604,16 @@ dividido pelo pedágio maior que 1, o ano fecha positivo; menor que 1, negativo.
   essas saídas melhoraram a mediana em ~60% e cortaram as operações de 1.452 para 250–600 — mas sem
   platô (trail de 40% dava 489%, de 50% dava 2.888%) e com as 5 melhores respondendo por 51% a 206%
   do lucro. Direção com lastro, parâmetros sem: por isso registra em vez de mudar a regra.
-- **[`analise_opcao.py`](analise_opcao.py)** refaz a decomposição ano a ano com o fator do momento.
-  `--por-ativo` usa o fator medido de cada ativo mesmo antes de ele valer no painel, `--fator 1.15`
-  força um valor. Com o fator geral de 1,30 a perna da opção em 2021–2026 dá **+124% em 1.435
-  operações** (3 anos negativos); com o fator de cada ativo (VALE3 1,09 · PETR4 1,47 · ITUB4 1,30),
-  **+663%** (2 anos negativos) — e o sinal se inverte por ativo: VALE3 vai de −468% para **+464%** e
-  PETR4 de +270% para **−122%**. São 4 medições da VALE3 e 1 da PETR4: é hipótese com número, não
-  conclusão.
+- **[`analise_opcao.py`](analise_opcao.py)** refaz a decomposição ano a ano. Com a implícita medida
+  no COTAHIST, a perna da opção de 2021 a 2026 dá **+2.452% em 1.453 operações**, líquido de 1% de
+  spread — **um único ano negativo** (2021, que só tem meio ano de candles) e cerca de **R$ 61 mil
+  por ano** com mão de R$ 15 mil. Por ativo: PETR4 +1.354%, VALE3 +551%, ITUB4 +546%.
+  `--fator X` e `--sem-medida` reprecificam com estimativa, para comparar.
+  - **O spread decide o resto.** Bruto são +3.905%; cada 1% de spread custa 1.453 pontos. A 1%
+    sobra +2.452%, a 2% sobra +999%, a 3% vira −454%. Executar dentro de ~2% do meio do book é a
+    condição para a conta fechar.
+  - As conclusões por ativo que tiraram do book ao vivo (VALE3 boa, PETR4 ruim) **não sobreviveram**
+    à amostra grande: eram 4 e 1 observação, num mês caro.
 - O `vigia.py` roda as duas medidas uma vez por pregão, depois das 18:45, em linha à parte, e
   **avisa** quando um ativo junta amostra e sai do fator geral para o próprio — é a hora de rodar o
   `analise_opcao.py` de novo, porque o painel passou a responder outra coisa.

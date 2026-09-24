@@ -69,13 +69,18 @@ def coleta(desde: str, ate: str, fatores: dict) -> pd.DataFrame:
             fech.index = pd.to_datetime(fech.index)
             candles[ativo] = fech
         ent_hora, ent_preco = l["entrada"][0], float(l["entrada"][1])
-        rv = vol.realizada(candles[ativo], ent_hora.normalize().tz_localize(None), vol.JANELA_RV)
-        if rv is None:
-            continue
-        iv = float(np.clip(rv * fatores[ativo], 0.10, 1.5))
+        dia, tipo = ent_hora.date(), o["tipo"]
+        iv = None if fatores.get("_ignora_medida") else vol.iv_medida(ativo, tipo, ent_hora)
+        if iv is None:                         # sem medida no COTAHIST: estima pela realizada
+            rv = vol.realizada(candles[ativo], ent_hora.normalize().tz_localize(None), vol.JANELA_RV)
+            if rv is None:
+                continue
+            iv = float(np.clip(rv * fatores[ativo], 0.10, 1.5))
+            medido = False
+        else:
+            medido = True
 
         # mesma escolha de série do painel: vencimento mensal que cobre o tempo típico + folga
-        dia, tipo = ent_hora.date(), o["tipo"]
         minimo = max(app.DIAS_TIPICOS.get(ativo, 2) + app.FOLGA_DU, app.DU_MIN_PADRAO)
         venc = next((v for v in app.calendario_vencimentos(dia) if app.dias_uteis(dia, v) >= minimo), None)
         if venc is None:
@@ -84,27 +89,31 @@ def coleta(desde: str, ate: str, fatores: dict) -> pd.DataFrame:
         d1 = app.D1_DELTA_55 if tipo == "CALL" else -app.D1_DELTA_55
         strike = ent_preco * math.exp(-d1 * iv * math.sqrt(t0) + (app.TAXA_PADRAO + iv ** 2 / 2) * t0)
 
-        def preco(s, quando):
+        def preco(s, quando, vol_fixa=False):
+            """Reprecifica com a implícita DAQUELE pregão: entre a entrada e a saída a volatilidade
+            muda, e numa opção de delta 0,55 isso pesa tanto quanto meio dia de pedágio."""
             if quando.date() > venc:
                 s = float(candles[ativo][candles[ativo].index <= pd.Timestamp(venc)].iloc[-1])
                 return max(s - strike, 0.0) if tipo == "CALL" else max(strike - s, 0.0)
             pz = max(app.dias_uteis(quando.date(), venc), 0) / 252.0
-            return app._black_scholes(float(s), strike, pz, iv, app.TAXA_PADRAO, tipo)[0]
+            v = iv if vol_fixa else (vol.iv_medida(ativo, tipo, quando) or iv)
+            return app._black_scholes(float(s), strike, pz, v, app.TAXA_PADRAO, tipo)[0]
 
-        p0 = preco(ent_preco, ent_hora)
+        p0 = preco(ent_preco, ent_hora, vol_fixa=True)
         if p0 <= 0:
             continue
         fim = l["saidas"][-1][1]
         pct = sum(fr * (preco(pr, h) / p0 - 1) * 100 for _, h, pr, fr in l["saidas"])
         s_medio = sum(pr * fr for _, _, pr, fr in l["saidas"]) / sum(fr for _, _, _, fr in l["saidas"])
         direcional = (app._black_scholes(float(s_medio), strike, t0, iv, app.TAXA_PADRAO, tipo)[0] / p0 - 1) * 100
-        tempo = (preco(ent_preco, fim) / p0 - 1) * 100
+        tempo = (preco(ent_preco, fim, vol_fixa=True) / p0 - 1) * 100
         _, delta = app._black_scholes(ent_preco, strike, t0, iv, app.TAXA_PADRAO, tipo)
         linhas.append({"ano": fim.year, "ativo": ativo, "acao": l["acao"], "opcao": pct,
                        "direcional": direcional, "tempo": tempo, "cruzado": pct - direcional - tempo,
                        "iv": iv * 100, "premio_pct": p0 / ent_preco * 100,
                        "alav": abs(delta) * ent_preco / p0,
-                       "du_segurada": app.dias_uteis(dia, fim.date()), "du_prazo": t0 * 252})
+                       "du_segurada": app.dias_uteis(dia, fim.date()), "du_prazo": t0 * 252,
+                       "medido": medido})
     return pd.DataFrame(linhas)
 
 
@@ -157,6 +166,8 @@ def main() -> int:
     print("\nfator usado: " + " | ".join(f"{a} {f:.2f}x" for a, f in fatores.items())
           + ("   (sem trava de amostra)" if por_ativo else "")
           + ("   (forçado)" if forcado else ""))
+    if "--sem-medida" in argv:
+        fatores["_ignora_medida"] = True
     t = coleta(desde, date.today().isoformat(), fatores)
     if t.empty:
         print("nenhuma operação precificada")

@@ -4350,9 +4350,13 @@ def _resultado_na_opcao(ativo: str, est, op, candles: pd.DataFrame, diario: dict
         # vai junto. Usar uma IV só para a série inteira inflava os anos de volatilidade alta e
         # afundava os de volatilidade baixa (2025 aparecia em −55% quando foi positivo). Aqui entra a
         # realizada da época vezes o prêmio de volatilidade medido no book (volatilidade.py).
-        sigma_novo = vol.iv_da_epoca(ativo, candles, ent.hora)
-        if sigma_novo is not None:
-            fonte_vol = f"realizada da época × {vol.premio(ativo):.2f} (prêmio medido)"
+        medida = vol.iv_medida(ativo, tipo, ent.hora)
+        if medida:
+            sigma_novo, fonte_vol = medida, "implícita medida no COTAHIST daquele pregão"
+        else:
+            sigma_novo = vol.iv_da_epoca(ativo, candles, ent.hora, tipo)
+            if sigma_novo is not None:
+                fonte_vol = f"realizada da época × {vol.premio(ativo):.2f} (prêmio medido)"
     if sigma_novo is None:
         sigma_novo, fonte_vol = sigma if sigma is not None else _vol_historica(candles, ent.hora), \
             "histórica da ação"

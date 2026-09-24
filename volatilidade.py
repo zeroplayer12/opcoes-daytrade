@@ -227,8 +227,50 @@ def spread(ativo: str | None = None) -> float | None:
     return float(np.median(meu)) if len(meu) >= 5 else None
 
 
-def iv_da_epoca(ativo: str, candles: pd.DataFrame, quando) -> float | None:
-    """Implícita estimada para uma operação antiga: a realizada da época vezes o prêmio medido."""
+MEDIDA = PASTA_RT / "premio_cotahist.csv"
+_medida: dict = {"quando": None, "iv": None}
+
+
+def _tabela_medida() -> dict:
+    """Implícita de verdade, por pregão/ativo/tipo, tirada do COTAHIST (premio_historico.py).
+    É melhor do que qualquer estimativa: é o preço que a opção tinha naquele dia."""
+    try:
+        quando = MEDIDA.stat().st_mtime
+    except OSError:
+        return {}
+    if _medida["quando"] != quando:
+        try:
+            t = pd.read_csv(MEDIDA, usecols=["dia", "ativo", "tipo", "iv"])
+            _medida["iv"] = {(a, tp, d): v / 100.0
+                             for d, a, tp, v in zip(t["dia"], t["ativo"], t["tipo"], t["iv"])}
+        except (OSError, ValueError, KeyError):
+            _medida["iv"] = {}
+        _medida["quando"] = quando
+    return _medida["iv"] or {}
+
+
+def iv_medida(ativo: str, tipo: str, dia) -> float | None:
+    """Implícita do pregão exato; sem ela, a do pregão anterior mais próximo (até 5 dias)."""
+    tab = _tabela_medida()
+    if not tab:
+        return None
+    d = pd.Timestamp(dia)
+    if d.tzinfo is not None:
+        d = d.tz_localize(None)
+    for atras in range(6):
+        v = tab.get((ativo, tipo, (d - pd.Timedelta(days=atras)).date().isoformat()))
+        if v:
+            return v
+    return None
+
+
+def iv_da_epoca(ativo: str, candles: pd.DataFrame, quando, tipo: str | None = None) -> float | None:
+    """Implícita para uma operação antiga. Primeiro a medida no COTAHIST daquele pregão; só quando
+    não há é que entra a estimativa (realizada da época × prêmio medido)."""
+    if tipo:
+        v = iv_medida(ativo, tipo, quando)
+        if v:
+            return v
     if candles is None or candles.empty:
         return None
     fech = candles["close"][candles.index < pd.Timestamp(quando).normalize()].astype(float)
